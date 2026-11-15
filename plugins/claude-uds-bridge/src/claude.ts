@@ -197,10 +197,11 @@ export function publishPeerKey(configDir: string, address: string, procStart: st
 
 // Local-chain eligibility comes from the authenticated socket, never a JSON trust flag.
 // A modern sender must also use an unambiguous native envelope bound to its registry address.
+// from-session is an opaque native label (Desktop may use local_<id>), not the registry UUID.
 export function localChain(frame: Extract<Frame, { type: 'user' }>, peer: Peer, authenticated: boolean) {
   if (!authenticated || !peer.procStart || frame.from !== peerAddress(peer.messagingSocketPath)) return false;
   const header = /^<cross-session-message from="([^"\r\n]+)"(?: from-session="([^"\r\n]+)")?(?: hop-chain="([a-f0-9,]+)")?(?: from-name="[^"<>\r\n]+")?(?: from-mode="[^"<>\r\n]+")?(?: from-plugin="[^"<>\r\n]+")?>\n[\s\S]*\n<\/cross-session-message>$/.exec(frame.message.content);
-  return !!header && header[1] === frame.from && (!header[2] || header[2] === peer.sessionId)
+  return !!header && header[1] === frame.from && (!header[2] || /^[A-Za-z0-9_-]{1,80}$/.test(header[2]))
     && (!header[3] || chainPattern.test(header[3]));
 }
 

@@ -18,7 +18,7 @@ test('only socket authentication and a bound native envelope qualify a registere
   expect(localChain(parsed, { ...peer, procStart: undefined }, true)).toBe(false);
   expect(localChain({ ...parsed, from: 'uds:/tmp/other.sock' }, peer, true)).toBe(false);
   expect(localChain({ ...parsed, message: { ...parsed.message,
-    content: parsed.message.content.replace(peer.sessionId, randomUUID()) } }, peer, true)).toBe(false);
+    content: parsed.message.content.replace(peer.sessionId, `local_${randomUUID()}`) } }, peer, true)).toBe(true);
   for (const value of ['', 'bad', 'A'.repeat(24), Array(33).fill('a'.repeat(24)).join(','), true]) {
     expect(frameSchema.safeParse({ ...raw, local_chain: value }).success).toBe(false);
   }
