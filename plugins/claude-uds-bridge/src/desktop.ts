@@ -22,6 +22,8 @@ const snapshotSchema = z.object({ cwd: z.string().min(1), threadRuntimeStatus: z
     sandboxPolicy: z.object({ type: z.string() }).optional() }).optional() });
 type Snapshot = z.infer<typeof snapshotSchema>;
 export type Runtime = { status: 'idle' | 'busy' | 'unknown'; mode: 'prompting' | 'bypass' | 'unknown' };
+export type DeliveryMode = 'steer' | 'queue';
+export class DeliveryUnsupported extends Error {}
 export class DesktopDisconnected extends Error {}
 const acceptedSchema = z.object({ result: z.union([
   z.object({ turn: z.object({ id: uuid }) }), z.object({ turnId: uuid }),
@@ -52,6 +54,7 @@ class DesktopConnection {
   private observed?: Runtime;
   private refreshing = false;
   private dirty = false;
+  private streamVersion?: number;
   private disconnectError?: Error;
 
   constructor(readonly path: string, readonly threadId: string, onDisconnect?: (error: Error) => void) {
@@ -137,6 +140,40 @@ class DesktopConnection {
   }
 
   async inputs() { return desktopInputs(await this.snapshot()); }
+
+  async enqueue(text: string, messageId: string) {
+    const state = await this.snapshot();
+    if (this.streamVersion !== 13) throw new DeliveryUnsupported('Queue delivery requires Desktop stream v13; no message was submitted');
+    const message = { id: messageId, text, cwd: state.cwd, createdAt: Date.now(),
+      context: { prompt: text, addedFiles: [], fileAttachments: [], ideContext: null,
+        imageAttachments: [], workspaceRoots: [state.cwd], commentAttachments: [] } };
+    // The owner first reserves one ID, then replaces that reservation with the prepared item.
+    // preparationMessageId makes both operations merge by ID, preserving its existing queue.
+    try {
+      for (const item of [{ ...message, preparation: {} }, message]) {
+        const response = await this.request('thread-follower-set-queued-follow-ups-state', {
+          conversationId: this.threadId, state: { [this.threadId]: [item] },
+          discardedMessageIds: [], preparationMessageId: messageId,
+        }, 3);
+        z.object({ ok: z.literal(true) }).parse(response.result);
+      }
+    } catch (error) {
+      // A failed finalization must not leave a reservation blocking the user's queue.
+      // Remove only our UUID; an uncertain outcome is never retried as a new submission.
+      try { await removeDesktopQueuedMessage(this.path, this.threadId, messageId); }
+      catch { throw new Error(`Queue outcome unknown for ${messageId}; cleanup could not be confirmed. Inspect the native queue before retrying.`); }
+      throw error;
+    }
+    return { status: 'queued' as const, turnId: null, queueId: messageId };
+  }
+
+  async removeQueued(messageId: string) {
+    await this.snapshot();
+    if (this.streamVersion !== 13) throw new DeliveryUnsupported('Queue removal requires Desktop stream v13');
+    const response = await this.request('thread-follower-remove-queued-message', { conversationId: this.threadId, messageId }, 1);
+    const { removed } = z.object({ removed: z.union([z.boolean(), z.null(), z.object({}).passthrough()]) }).parse(response.result);
+    return removed !== null && removed !== false;
+  }
 
   private async refresh() {
     this.dirty = true;
@@ -231,6 +268,7 @@ class DesktopConnection {
           if (packet.version !== 11 && packet.version !== 13) {
             throw new Error(`Unsupported Desktop stream version: ${packet.version} (supported: 11, 13)`);
           }
+          this.streamVersion = packet.version;
           if (params.change.type === 'snapshot') this.snapshotResult?.resolve(snapshotSchema.parse(params.change.conversationState));
           else if (this.onState && params.change.type === 'patches' && params.change.patches?.some(patch =>
             patch.path.length === 0 || ['threadRuntimeStatus', 'currentPermissions'].includes(String(patch.path[0])))) {
@@ -272,11 +310,19 @@ export async function watchDesktop(path: string, threadId: string, onState: (sta
   catch (error) { connection.close(); throw error; }
 }
 
-export async function deliverToDesktop(path: string, threadId: string, messageId: string, text: string) {
+export async function deliverToDesktop(path: string, threadId: string, messageId: string, text: string, delivery: DeliveryMode = 'steer') {
   uuid.parse(threadId);
   uuid.parse(messageId);
   const connection = new DesktopConnection(path, threadId);
-  try { await connection.connect(); return await connection.submit(text, messageId); }
+  try { await connection.connect(); return delivery === 'queue' ? await connection.enqueue(text, messageId) : await connection.submit(text, messageId); }
+  finally { connection.close(); }
+}
+
+export async function removeDesktopQueuedMessage(path: string, threadId: string, messageId: string) {
+  uuid.parse(threadId);
+  uuid.parse(messageId);
+  const connection = new DesktopConnection(path, threadId);
+  try { await connection.connect(); return await connection.removeQueued(messageId); }
   finally { connection.close(); }
 }
 

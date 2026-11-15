@@ -4,8 +4,6 @@ A Codex plugin that lets Codex tasks and Claude Code sessions message each other
 
 Claude Code lists and messages its other sessions through its own local registry. This plugin registers each Codex task in that registry, so Claude finds the task with `ListAgents` and writes to it with `SendMessage`. Claude needs no flags, plugins, or launchers. A bundled MCP server gives the Codex side `list_sessions` and `send_message`. Messages travel over Unix domain sockets in private per-user directories.
 
-The ByMedion fork supports Desktop stream versions 11 and 13. Other versions are rejected. See [Desktop compatibility](plugins/claude-uds-bridge/DESKTOP-COMPATIBILITY.md) for evidence and limits.
-
 ## Requirements
 
 - Stock Codex with its shared local app-server daemon. CLI tasks on the daemon and desktop tasks it owns work. Older desktop tasks use the desktop IPC fallback. CLI sessions started with `--no-daemon` have no inbox. Real-runtime checks cover Codex 0.159.0, 0.159.2, and 0.159.3.
@@ -20,14 +18,18 @@ codex plugin marketplace add LeonKohli/claude-uds-bridge
 codex plugin add claude-uds-bridge@leonkohli
 ```
 
-To install the ByMedion fork from a local checkout:
+The ByMedion fork supports Desktop stream versions 11 and 13, adds receiver diagnostics and recovery, and supports native queue delivery on Desktop v13. Other stream versions are rejected. See [Desktop compatibility](plugins/claude-uds-bridge/DESKTOP-COMPATIBILITY.md) for the evidence and limits.
+
+To install this fork from a local checkout:
 
 ```bash
 codex plugin marketplace add /absolute/path/to/claude-uds-bridge
 codex plugin add claude-uds-bridge@leonkohli
 ```
 
-The fork keeps the upstream marketplace name `leonkohli`, so the plugin retains its existing identity when its source changes to the local checkout. If `leonkohli` is already configured from another source, run `codex plugin marketplace remove leonkohli` before adding the local checkout. Restart Codex when an already loaded component has not refreshed after an update.
+The fork keeps the upstream marketplace name `leonkohli`, so the plugin retains its existing identity when its source changes to the local checkout. Restart Codex after updating an already loaded plugin.
+
+If `leonkohli` is already configured from another source, run `codex plugin marketplace remove leonkohli` before adding the local checkout.
 
 The plugin is not in the public Plugin Directory. As of 2026-10-03, OpenAI's [submission rules](https://developers.openai.com/plugins/deploy/submission) reject plugins with lifecycle hooks and accept only hosted HTTPS MCP servers. This plugin needs a `SessionStart` hook and a local MCP server, because the sockets and registry it uses live on your machine. It installs through its own marketplace until those rules change.
 
@@ -73,15 +75,21 @@ The app-server transport uses `turn/start` with `toolOutput`, which starts or jo
 
 `send_message` addresses a peer by `sessionId`, not by name. An ambiguous registration is refused.
 
-## Diagnose a receiver
+## Choose steering or queue delivery
 
-`status` reports the loaded plugin and receiver versions, selected transport path, and the last receiver startup result. `diagnose` probes this chat's transport without submitting input and distinguishes missing/refused sockets, initialization timeouts, and unsupported stream versions.
+`send_message` accepts `delivery: "steer"` (default) or `delivery: "queue"`. Steering joins the active turn, or starts one when idle. Queue delivery adds one item to the recipient's native Desktop queue and lets Codex schedule it after the current turn. The bridge preserves the existing queue and never substitutes steering for an unsupported queue request.
 
-## Recover a receiver
+For Claude's native `SendMessage`, start the message text with `[bridge:queue]` on its own line. `[bridge:steer]` explicitly selects the default. These markers are bridge conventions; they do not require an extra Claude tool argument. Raw socket frames can also use `priority: "later"` for queue delivery; `now` and `next` retain steering behavior. A leading text marker takes precedence over the wire priority.
 
-Run `recover_receiver` to retry a receiver after its trusted `SessionStart` hook has established an active lifecycle. It uses the recorded directory and preserves held messages, their deadlines, and policy. Review/reopen the trusted hook if no active lifecycle exists.
+Queue delivery requires Desktop stream v13. App-server delivery retains tool-output authority and rejects queue requests because its native queue accepts user input only. Outbound MCP queue requests require the peer to advertise `delivery_queue`; ordinary Claude peers and older bridges do not advertise it. `queued` confirms admission, not that a turn ran or a reply arrived. Held queue messages still require the normal release decision.
 
-Desktop observers retry transient disconnects for up to 30 seconds while status and permissions remain unknown. Discovery tries the known per-user legacy socket after a missing/refused primary endpoint, retaining all ownership and protocol checks. An incompatible IDE router still needs its router conflict fixed, sometimes by quitting both apps and starting Codex first.
+## Diagnose and recover a receiver
+
+`status` reports `pluginVersion`, `receiverVersion`, `transportPath`, and the last receiver startup result. `diagnose` also probes this chat's transport without submitting input. It distinguishes missing/refused sockets, initialization timeouts, and unsupported stream versions.
+
+Run `recover_receiver` to retry a receiver after its trusted `SessionStart` hook has established an active lifecycle. It uses that lifecycle's recorded directory and preserves held messages and policy. It refuses recovery before a lifecycle exists or after `SessionEnd`; review/reopen the trusted hook in that case.
+
+Desktop observers now retry transient disconnects for up to 30 seconds, keeping status and permissions unknown until a fresh snapshot arrives. Discovery can try the known per-user legacy socket after a missing/refused primary endpoint, with the same ownership, private-directory, thread-owner, and stream checks. An incompatible IDE router still requires fixing the router conflict, sometimes by quitting both apps and starting Codex first.
 
 ## Control what arrives
 
@@ -103,10 +111,10 @@ The sender sees Claude's status notices, among them `held`, `delivered`, `denied
 | Tool | Use |
 | --- | --- |
 | `list_sessions` | List local agents with ID, name, agent type, working directory, status, and start time. |
-| `send_message` | Send text to one agent. Set `notify_when_idle` for one notice when that agent next goes idle. |
-| `status` | Show receiver versions and recent transport outcomes. |
-| `diagnose` | Show startup errors and transport reachability without submitting input. |
-| `recover_receiver` | Retry this chat receiver within its active recorded lifecycle. |
+| `send_message` | Send text with `delivery: "steer"` or `"queue"`. Set `notify_when_idle` for one idle notice. |
+| `status` | Show the receiver and recent transport outcomes. |
+| `diagnose` | Show versions, startup errors, and transport reachability without submitting input. |
+| `recover_receiver` | Retry this chat's receiver within its active recorded lifecycle. |
 | `inbox` | Open a dialog where you set the receive policy and hold expiry, or review the oldest held message. |
 
 ## Limits
@@ -114,7 +122,7 @@ The sender sees Claude's status notices, among them `held`, `delivered`, `denied
 - One message may reach 1,048,576 serialized characters. The sender refuses more before writing.
 - A burst of 30 messages to one agent exhausts the budget. It refills one message every two seconds.
 - At most 100 messages stay held and 50 accepted messages wait for Codex.
-- `socket-written`, `accepted`, `started`, and `steered` report transport progress. A model reply is a separate event.
+- `socket-written`, `queued`, `accepted`, `started`, and `steered` report transport progress. A model reply is a separate event.
 - Idle subscriptions fire once and last at most 12 hours.
 - The bridge refuses attachments and says why. Send a shared path as text.
 - The bridge does not lock files. Agree on file ownership before two agents edit one repository.

@@ -2,8 +2,8 @@ import { Database } from 'bun:sqlite';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
-import { accountReceipt, findPeer, findPeerProcess, hopChain, inbox, peerAddress, peers, privateDirectory, processStart, register, SendRefused, sendFrames, senderMode, serializeFrame, socketPath, userFrame, uuid, type Frame, type Peer } from './claude';
-import type { Runtime } from './desktop';
+import { accountReceipt, findPeer, findPeerProcess, hopChain, inbox, messageDelivery, peerAddress, peers, privateDirectory, processStart, register, SendRefused, sendFrames, senderMode, serializeFrame, socketPath, userFrame, uuid, type Frame, type Peer } from './claude';
+import { DeliveryUnsupported, type DeliveryMode, type Runtime } from './desktop';
 import { deliverToCodex, readCodexInputs, readCodexRuntime, targetSchema, type Target } from './codex';
 import { z } from 'zod';
 import { outboundServer, refreshReceiver, sendViaReceiver } from './outbound';
@@ -12,7 +12,7 @@ import { version } from './version';
 
 type Message = { id: string; peer_id: string; direction: string; text: string; status: string; turn_id: string | null;
   peer_address: string | null; peer_start: string | null; from_mode: string | null; expires_at: number | null; kind: string;
-  drop_reason: string | null; status_reason: string | null };
+  drop_reason: string | null; status_reason: string | null; delivery_mode: DeliveryMode };
 type Subscription = { id: string; peer_id: string; peer_address: string; peer_start: string | null; direction: string };
 export const policySchema = z.enum(['default', 'accept', 'hold', 'refuse']);
 export const expirySchema = z.enum(['60s', '5m', '10m', 'never']);
@@ -81,6 +81,7 @@ export class Bridge {
       status_reason: 'ALTER TABLE messages ADD COLUMN status_reason TEXT',
       awaiting_input: 'ALTER TABLE messages ADD COLUMN awaiting_input INTEGER NOT NULL DEFAULT 0',
       native_input_id: 'ALTER TABLE messages ADD COLUMN native_input_id TEXT',
+      delivery_mode: "ALTER TABLE messages ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'steer'",
     })) {
       if (!columns.some(column => column.name === name)) this.db.exec(sql);
     }
@@ -194,7 +195,7 @@ export class Bridge {
       this.closeOutbound = await outboundServer(socketPath(this.listener.address).replace(/\.sock$/, '.out'), this.configDir, this.listener.address,
         frames => !this.closing && (!frames.some(frame => frame.type === 'control' && frame.action === 'peer_idle_notice' && frame.state === 'idle') || this.canNotifyIdle()),
         () => this.scheduleExpiry());
-      this.registration = await register(this.configDir, this.threadId, this.listener.address, cwd, this.runtime().status);
+      this.registration = await register(this.configDir, this.threadId, this.listener.address, cwd, this.runtime().status, this.target().kind === 'desktop');
       if (this.closing) throw new Error('Receiver is closing');
       for (const message of this.db.query<Message, []>("SELECT * FROM messages WHERE direction='in' AND status='pending' ORDER BY created_at,rowid").all()) {
         if (this.closing) break;
@@ -235,7 +236,7 @@ export class Bridge {
     const inputs = await readCodexInputs(this.target(), this.threadId, awaiting);
     this.db.transaction(() => {
       for (const input of inputs.consumed) this.db.run(
-        "UPDATE messages SET awaiting_input=0,native_input_id=? WHERE direction='in' AND (desktop_input_id=? OR native_input_id=?) AND status IN ('submitting','started','steered','accepted','unknown')",
+        "UPDATE messages SET awaiting_input=0,native_input_id=? WHERE direction='in' AND (desktop_input_id=? OR native_input_id=?) AND status IN ('submitting','started','steered','queued','accepted','unknown')",
         [input.id, input.clientId, input.id]);
     })();
     return inputs;
@@ -263,11 +264,14 @@ export class Bridge {
     return receiver;
   }
 
-  sendMessage(sessionId: string, text?: string, notifyWhenIdle = false) {
+  sendMessage(sessionId: string, text?: string, notifyWhenIdle = false, delivery: DeliveryMode = 'steer') {
     return this.exclusive(async () => {
       await this.expireSubscriptions();
       if (sessionId === this.threadId) throw new Error('Cannot send to this task itself');
       const peer = findPeer(this.configDir, sessionId);
+      if (text && delivery === 'queue' && !peer.peerFeatures.includes('delivery_queue')) {
+        throw new SendRefused('Target does not advertise queue delivery; no message was sent');
+      }
       if (!text && !notifyWhenIdle) throw new Error('A message or notify_when_idle is required');
       if (notifyWhenIdle && (!peer.peerFeatures.includes('notify_idle') || this.policy() === 'refuse')) {
         throw new Error('Idle subscription unavailable: target must support notify_idle and this inbox must not refuse incoming notices');
@@ -277,12 +281,12 @@ export class Bridge {
       const id = text ? randomUUID() : null;
       const subscriptionId = notifyWhenIdle ? randomUUID() : null;
       const frames: unknown[] = [];
-      const messageFrame = id && text ? userFrame(peer, address, receiver.name, this.threadId, id, text, this.runtime().mode, this.ownHop(), await this.outgoingHops()) : null;
+      const messageFrame = id && text ? userFrame(peer, address, receiver.name, this.threadId, id, text, this.runtime().mode, this.ownHop(), await this.outgoingHops(), delivery) : null;
       if (messageFrame) serializeFrame(messageFrame);
       if (subscriptionId) this.subscribe(subscriptionId, peer, 'out');
       if (id && text) {
-        this.db.run("INSERT INTO messages (id,peer_id,direction,text,status,peer_address,peer_start) VALUES (?,?,'out',?,'submitting',?,?)",
-          [id, sessionId, text, peerAddress(peer.messagingSocketPath), peer.procStart ?? null]);
+        this.db.run("INSERT INTO messages (id,peer_id,direction,text,status,peer_address,peer_start,delivery_mode) VALUES (?,?,'out',?,'submitting',?,?,?)",
+          [id, sessionId, text, peerAddress(peer.messagingSocketPath), peer.procStart ?? null, delivery]);
         frames.push(messageFrame);
       }
       if (subscriptionId) {
@@ -351,12 +355,12 @@ export class Bridge {
       }
       return;
     }
-    await this.acceptIncoming(frame.msg_id, peer, frame.message.content, senderMode(frame.message.content) ?? null, 'message');
+    await this.acceptIncoming(frame.msg_id, peer, frame.message.content, senderMode(frame.message.content) ?? null, 'message', messageDelivery(frame.message.content, frame.priority));
   }
 
-  private async acceptIncoming(id: string, peer: Peer, text: string, mode: string | null, kind: string) {
-    const result = this.db.run("INSERT OR IGNORE INTO messages (id,peer_id,direction,text,status,peer_address,peer_start,from_mode,kind) VALUES (?,?,'in',?,'pending',?,?,?,?)",
-      [id, peer.sessionId, text, peerAddress(peer.messagingSocketPath), peer.procStart ?? null, mode, kind]);
+  private async acceptIncoming(id: string, peer: Peer, text: string, mode: string | null, kind: string, delivery: DeliveryMode = 'steer') {
+    const result = this.db.run("INSERT OR IGNORE INTO messages (id,peer_id,direction,text,status,peer_address,peer_start,from_mode,kind,delivery_mode) VALUES (?,?,'in',?,'pending',?,?,?,?,?)",
+      [id, peer.sessionId, text, peerAddress(peer.messagingSocketPath), peer.procStart ?? null, mode, kind, delivery]);
     if (result.changes === 0) return;
     const message = this.db.query<Message, [string]>('SELECT * FROM messages WHERE id=?').get(id);
     if (message) await this.route(message);
@@ -609,11 +613,18 @@ export class Bridge {
       }
     }
     try {
-      const result = await deliverToCodex(this.target(), this.threadId, inputId, text);
+      const result = await deliverToCodex(this.target(), this.threadId, inputId, text, message.delivery_mode);
       this.db.run('UPDATE messages SET status=?,turn_id=? WHERE id=?', [result.status, result.turnId, message.id]);
       if (message.status === 'held') await this.receipt(message, 'delivered');
-    } catch {
-      this.db.run("UPDATE messages SET status='unknown' WHERE id=?", [message.id]);
+    } catch (error) {
+      if (error instanceof DeliveryUnsupported) {
+        this.db.run("UPDATE messages SET status='refused',awaiting_input=0,status_reason=? WHERE id=?", [error.message, message.id]);
+        await this.receipt({ ...message, status_reason: error.message }, 'refused');
+      } else {
+        const reason = message.delivery_mode === 'queue' && error instanceof Error
+          ? error instanceof z.ZodError ? 'Native queue response did not match the supported schema' : error.message : null;
+        this.db.run("UPDATE messages SET status='unknown',status_reason=? WHERE id=?", [reason, message.id]);
+      }
     }
   }
 
@@ -627,8 +638,8 @@ export class Bridge {
       inboundPolicy: this.policy(), dialogExpiry: this.dialogExpiry(), heldCount: this.held().length, unreadCount: this.unreadCount(),
       idleRequests: this.db.query<Pick<Subscription, 'id' | 'peer_id' | 'direction'> & { status: string }, [number]>(
         'SELECT id,peer_id,direction,status FROM idle_requests WHERE expires_at>?').all(Date.now()),
-      messages: this.db.query<Pick<Message, 'id' | 'peer_id' | 'direction' | 'status' | 'turn_id' | 'drop_reason' | 'status_reason'>, []>(
-        'SELECT id,peer_id,direction,status,turn_id,drop_reason,status_reason FROM messages ORDER BY created_at DESC,rowid DESC LIMIT 20').all() };
+      messages: this.db.query<Pick<Message, 'id' | 'peer_id' | 'direction' | 'status' | 'turn_id' | 'drop_reason' | 'status_reason' | 'delivery_mode'> & { input_id: string | null }, []>(
+        'SELECT id,peer_id,direction,status,turn_id,drop_reason,status_reason,delivery_mode,desktop_input_id AS input_id FROM messages ORDER BY created_at DESC,rowid DESC LIMIT 20').all() };
   }
 
   async close() {

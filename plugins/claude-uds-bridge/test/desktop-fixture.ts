@@ -14,6 +14,8 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
   const turnId = randomUUID();
   const submissions: { method: string; params: unknown }[] = [];
   const requests: z.infer<typeof requestSchema>[] = [];
+  const queuedMessages = new Map<string, Record<string, unknown>>();
+  let queueFailure: 'finalize' | 'ack' | undefined;
   let permissions: unknown = { approvalPolicy: 'on-request', sandboxPolicy: { type: 'workspaceWrite' } };
   let history: Record<string, unknown> = { turns: [], turnHistory: { kind: 'legacy' } };
   const clients = new Set<net.Socket>();
@@ -51,6 +53,28 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
           write({ type: 'broadcast', sourceClientId: 'owner', method: 'thread-stream-state-changed', version: streamVersion,
             params: { conversationId: threadId, change: { type: 'snapshot',
               conversationState: { cwd: root, threadRuntimeStatus: { type: state }, currentPermissions: permissions, ...history } } } });
+        } else if (request.method === 'thread-follower-set-queued-follow-ups-state') {
+          const params = z.object({ conversationId: z.string(), preparationMessageId: z.string(),
+            state: z.record(z.string(), z.array(z.object({ id: z.string(), preparation: z.unknown().optional() }).passthrough())),
+            discardedMessageIds: z.array(z.string()) }).parse(request.params);
+          const message = params.state[threadId]?.[0];
+          if (request.version !== 3 || streamVersion !== 13 || params.conversationId !== threadId || !message || message.id !== params.preparationMessageId) {
+            write({ type: 'response', requestId: request.requestId, resultType: 'error', error: 'Invalid queue request' });
+          } else if (message.preparation !== undefined) {
+            if (!queuedMessages.has(message.id)) queuedMessages.set(message.id, message);
+            reply({ ok: true });
+          } else if (!queuedMessages.has(message.id) || queueFailure === 'finalize') {
+            write({ type: 'response', requestId: request.requestId, resultType: 'error', error: 'Queued message preparation was canceled' });
+          } else {
+            queuedMessages.set(message.id, message);
+            if (queueFailure === 'ack') socket.destroy();
+            else reply({ ok: true });
+          }
+        } else if (request.method === 'thread-follower-remove-queued-message') {
+          const { messageId } = z.object({ messageId: z.string() }).parse(request.params);
+          const message = queuedMessages.get(messageId);
+          queuedMessages.delete(messageId);
+          reply({ removed: message ? { message } : null });
         } else {
           if (request.method === 'thread-follower-steer-turn' && endBeforeSteer) {
             state = 'idle';
@@ -68,7 +92,8 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
   server.listen(path);
   await once(server, 'listening');
   chmodSync(path, 0o600);
-  return { path, threadId, turnId, submissions, requests,
+  return { path, threadId, turnId, submissions, requests, queuedMessages,
+    failQueue(value: 'finalize' | 'ack') { queueFailure = value; },
     disconnectClients() { for (const socket of clients) socket.destroy(); },
     setHistory(value: Record<string, unknown>) { history = { turns: [], turnHistory: { kind: 'legacy' }, ...value }; },
     setPermissions(value: unknown) { permissions = value; for (const send of announce) send(); },

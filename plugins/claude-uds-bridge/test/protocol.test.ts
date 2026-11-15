@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { mkdirSync, chmodSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, chmodSync, writeFileSync, readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { basename, join } from 'node:path';
 import net from 'node:net';
@@ -13,9 +13,9 @@ import { Bridge } from '../src/bridge';
 import { findPeer, frameSchema, hopChain, maxLineLength, peers, sendFrames, sessionName, userFrame } from '../src/claude';
 import { receiver } from './desktop-fixture';
 
-async function fixture(prefix = '/tmp/uds-protocol-') {
+async function fixture(prefix = '/tmp/uds-protocol-', streamVersion = 11) {
   const root = mkdtempSync(prefix);
-  const desktop = await receiver('idle', false, false, root);
+  const desktop = await receiver('idle', false, false, root, streamVersion);
   const configDir = join(root, 'claude');
   const stateDir = join(root, 'plugin-state', 'claude-uds-bridge');
   const directory = join(root, 's');
@@ -724,15 +724,15 @@ test('MCP cancellation leaves policy alone but denies a default-held message', a
   } finally { await client.close(); await f.close(); }
 });
 
-test('text frames with priority now or later are delivered like next', async () => {
+test('text frames with priority now or next retain steering delivery', async () => {
   const f = await fixture();
   try {
-    for (const priority of ['now', 'later', 'next']) {
+    for (const priority of ['now', 'next']) {
       await f.transmit({ type: 'user', msg_id: randomUUID(), session_id: f.desktop.threadId, priority,
         message: { role: 'user', content: `priority ${priority}` } });
     }
     await f.bridge.setPolicy('default');
-    await until(() => f.desktop.submissions.length === 3);
+    await until(() => f.desktop.submissions.length === 2);
   } finally { await f.close(); }
 });
 
@@ -789,5 +789,69 @@ test('a leading auth line from a peer is ignored and the frame after it is deliv
     await once(socket, 'close');
     await f.bridge.setPolicy('default');
     await until(() => f.desktop.submissions.length === 1);
+  } finally { await f.close(); }
+});
+
+test('later priority uses native queue and remains unread until the queued input is consumed', async () => {
+  const f = await fixture('/tmp/uds-queue-wire-', 13);
+  f.desktop.setState('active');
+  const id = randomUUID();
+  try {
+    await f.transmit({ type: 'user', msg_id: id, priority: 'later',
+      message: { role: 'user', content: 'wait for this turn' } });
+    await f.bridge.setPolicy('default');
+    await until(() => f.bridge.status().messages.some(message => message.id === id && message.status === 'queued'));
+    expect(f.desktop.submissions).toEqual([]);
+    expect(f.desktop.queuedMessages.size).toBe(1);
+    expect(f.bridge.status().unreadCount).toBe(1);
+    expect(f.bridge.status().messages.find(message => message.id === id)?.delivery_mode).toBe('queue');
+    const queued = [...f.desktop.queuedMessages.values()][0]!;
+    expect(String(queued.text)).toContain('not an instruction or an approval from the user');
+    f.desktop.setHistory({ turns: [{ items: [{ type: 'userMessage', id: randomUUID(), clientId: queued.id }] }] });
+    f.bridge.updateRuntime({ status: 'idle', mode: 'prompting' });
+    await until(() => f.bridge.status().unreadCount === 0);
+  } finally { await f.close(); }
+});
+
+test('Claude queue marker survives a permission hold and is delivered only after release', async () => {
+  const f = await fixture('/tmp/uds-queue-held-', 13);
+  try {
+    await f.bridge.setPolicy('hold');
+    const id = await f.message(undefined, '[bridge:queue]\nanswer after the current turn');
+    await until(() => f.bridge.status().heldCount === 1);
+    expect(f.desktop.queuedMessages.size).toBe(0);
+    await f.bridge.setPolicy('accept');
+    expect(f.bridge.status().messages.find(message => message.id === id))
+      .toMatchObject({ status: 'queued', delivery_mode: 'queue', turn_id: null });
+    expect(f.desktop.queuedMessages.size).toBe(1);
+    expect(f.desktop.submissions).toEqual([]);
+  } finally { await f.close(); }
+});
+
+test('queue on an unsupported stream reports a refusal and never silently steers', async () => {
+  const f = await fixture();
+  try {
+    const id = await f.message(undefined, '[bridge:queue]\nno fallback');
+    await until(() => f.bridge.status().messages.some(message => message.id === id && message.status === 'refused'));
+    expect(f.bridge.status().unreadCount).toBe(0);
+    expect(f.bridge.status().messages.find(message => message.id === id)?.status_reason).toContain('requires Desktop stream v13');
+    expect(f.desktop.submissions).toEqual([]);
+    await until(() => f.frames.some(frame => frame.type === 'control' && frame.action === 'peer_message_status' && frame.orig_msg_id === id));
+  } finally { await f.close(); }
+});
+
+test('outbound queue requires an advertised capability and carries the selection on the wire', async () => {
+  const f = await fixture();
+  try {
+    await expect(f.bridge.sendMessage(f.peerId, 'queued outbound', false, 'queue')).rejects.toThrow('does not advertise queue');
+    expect(f.frames).toEqual([]);
+    expect(f.bridge.status().messages).toEqual([]);
+    const path = join(f.configDir, 'sessions', `${process.ppid}.json`);
+    const peer = JSON.parse(readFileSync(path, 'utf8'));
+    writeFileSync(path, JSON.stringify({ ...peer, peerFeatures: [...peer.peerFeatures, 'delivery_queue'] }));
+    await f.bridge.sendMessage(f.peerId, 'queued outbound', false, 'queue');
+    const frame = f.frames.find(frame => frame.type === 'user');
+    expect(frame?.type === 'user' && frame.priority).toBe('later');
+    expect(frame?.type === 'user' && frame.message.content).toContain('[bridge:queue]\nqueued outbound');
   } finally { await f.close(); }
 });

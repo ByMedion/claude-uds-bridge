@@ -11,6 +11,7 @@ import { once } from 'node:events';
 import { z } from 'zod';
 import { BurstBudget } from './guard';
 import { version } from './version';
+import type { DeliveryMode } from './desktop';
 
 export const uuid = z.uuid();
 export const maxLineLength = 1048576;
@@ -137,7 +138,7 @@ export function sessionName(configDir: string, cwd: string, sessionId: string) {
 
 function trim(part: string) { return part.replace(/^-+|-+$/g, ''); }
 
-export async function register(configDir: string, sessionId: string, address: string, cwd: string, status: string) {
+export async function register(configDir: string, sessionId: string, address: string, cwd: string, status: string, queueDelivery = false) {
   const directory = join(configDir, 'sessions');
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   privateDirectory(directory);
@@ -146,7 +147,8 @@ export async function register(configDir: string, sessionId: string, address: st
     startedAt: Date.now(), procStart: await processStart(process.pid), peerProtocol: 1,
     ...(process.platform === 'darwin' ? { pidDomain: 'darwin' } : {}),
     kind: 'interactive', entrypoint: 'codex-claude-uds-bridge', messagingSocketPath: socketPath(address),
-    status, statusUpdatedAt: Date.now(), bridgeVersion: version, peerFeatures: ['notify_idle'] };
+    status, statusUpdatedAt: Date.now(), bridgeVersion: version,
+    peerFeatures: ['notify_idle', ...(queueDelivery ? ['delivery_queue'] : [])] };
   writeFileSync(path, JSON.stringify(record), { flag: 'wx', mode: 0o600 });
   const check = () => {
     const current = z.object({ sessionId: uuid, procStart: z.string() }).parse(ownedJson(path, 256 * 1024));
@@ -218,12 +220,18 @@ export function hopChain(text: string) {
 }
 
 // fromName must be the registered name: the receiver replies to what its ListAgents listing shows.
-export function userFrame(peer: Peer, address: string, fromName: string, fromSession: string, id: string, text: string, mode: string, token: string | null, previous: string[] = []) {
-  const body = text.replaceAll('</cross-session-message', '<\\/cross-session-message');
+export function userFrame(peer: Peer, address: string, fromName: string, fromSession: string, id: string, text: string, mode: string, token: string | null, previous: string[] = [], delivery: DeliveryMode = 'steer') {
+  const body = ((delivery === 'queue' ? '[bridge:queue]\n' : '') + text).replaceAll('</cross-session-message', '<\\/cross-session-message');
   const chain = [...previous, ...(token ? [token] : [])].slice(-32).join(',');
-  return { msgV: 1, msg_id: id, type: 'user', priority: 'next', from: address,
+  return { msgV: 1, msg_id: id, type: 'user', priority: delivery === 'queue' ? 'later' : 'next', from: address,
     session_id: peer.sessionId, message: { role: 'user', content:
       `<cross-session-message from="${address}" from-session="${fromSession}"${chain ? ` hop-chain="${chain}"` : ''} from-name="${fromName}"${modeSchema.safeParse(mode).success ? ` from-mode="${mode}"` : ''}>\n${body}\n</cross-session-message>` } };
+}
+
+export function messageDelivery(text: string, priority?: 'now' | 'next' | 'later'): DeliveryMode {
+  const body = /^<cross-session-message\s[^>]*>\s*([\s\S]*?)\s*<\/cross-session-message>$/.exec(text)?.[1] ?? text;
+  const marker = /^\[bridge:(queue|steer)\](?:\r?\n|$)/.exec(body)?.[1];
+  return marker === 'queue' || (!marker && priority === 'later') ? 'queue' : 'steer';
 }
 
 export function accountReceipt(peer: Peer, status: string, previous: string) {

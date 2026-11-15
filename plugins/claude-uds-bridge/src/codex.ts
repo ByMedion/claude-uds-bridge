@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { tmpdir } from 'node:os';
 import { AppServer, AppServerDisconnected, ThreadUnavailable, withAppServer } from './app-server';
 import { privateDirectory } from './claude';
-import { deliverToDesktop, DesktopDisconnected, readDesktopInputs, readDesktopRuntime, watchDesktop, type Runtime } from './desktop';
+import { deliverToDesktop, DesktopDisconnected, DeliveryUnsupported, readDesktopInputs, readDesktopRuntime, watchDesktop, type DeliveryMode, type Runtime } from './desktop';
 
 export const targetSchema = z.object({ kind: z.enum(['app-server', 'desktop']), path: z.string() });
 export type Target = z.infer<typeof targetSchema>;
@@ -98,7 +98,8 @@ export function readCodexInputs(target: Target, threadId: string, awaiting: stri
     : withAppServer(target.path, threadId, server => server.inputs(awaiting));
 }
 
-export function deliverToCodex(target: Target, threadId: string, inputId: string, text: string) {
-  return target.kind === 'desktop' ? deliverToDesktop(target.path, threadId, inputId, text)
-    : withAppServer(target.path, threadId, server => server.submit(inputId, text));
+export function deliverToCodex(target: Target, threadId: string, inputId: string, text: string, delivery: DeliveryMode = 'steer') {
+  if (target.kind === 'desktop') return deliverToDesktop(target.path, threadId, inputId, text, delivery);
+  if (delivery === 'queue') return Promise.reject(new DeliveryUnsupported('App-server queue does not support peer tool-output authority; no input was submitted'));
+  return withAppServer(target.path, threadId, server => server.submit(inputId, text));
 }
