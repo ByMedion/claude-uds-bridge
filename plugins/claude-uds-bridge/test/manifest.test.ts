@@ -26,3 +26,12 @@ test('the hooks run servers and bundles that exist', () => {
   }
   for (const bundle of hooks.match(/dist\/[a-z-]+\.js/g) ?? []) expect(existsSync(join(plugin, bundle))).toBe(true);
 });
+
+
+test('SessionStart covers native startup, resume, clear, fork and compact sources', () => {
+  const hooks = read(join(plugin, 'hooks/hooks.json')).hooks.SessionStart as { matcher: string }[];
+  for (const source of ['startup', 'resume', 'clear', 'fork', 'compact']) {
+    expect(hooks.some(group => new RegExp(group.matcher).test(source))).toBe(true);
+  }
+  expect(hooks.some(group => new RegExp(group.matcher).test('unknown-source'))).toBe(false);
+});

@@ -1,7 +1,7 @@
 {
   "hooks": {
     "SessionStart": [{
-      "matcher": "^(startup|resume|clear)$",
+      "matcher": "^(startup|resume|clear|fork|compact)$",
       "hooks": [{ "type": "mcp_tool", "server": "claude_uds_bridge", "tool": "session_start", "input": { "cwd": "${cwd}" }, "timeout": 15 }]
     }],
     "SessionEnd": [{

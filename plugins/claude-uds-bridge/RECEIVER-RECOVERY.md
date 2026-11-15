@@ -17,3 +17,5 @@ A genuine user instruction can authorize the documented manual installed-hook pr
 ## Validation
 
 Tests cover inactive recovery preserving held input and budget, owner/cwd changes, unknown permissions, disabled/modified/untrusted hooks, invalidated generations, idempotent MCP recovery, read-only hook-reader methods and incompatible routers. The selected native context remains local and bound to the MCP caller; callers cannot supply another thread ID or arbitrary cwd to recovery.
+
+The native SessionStart matcher covers `startup`, `resume`, `clear`, `fork` and `compact`. Repeated startup/compaction events reuse an already registered receiver rather than clearing its state. A fork gets its own thread ID and receiver. Changes to hook definitions/content follow the normal Codex trust review flow.
