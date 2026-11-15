@@ -41,8 +41,10 @@ const server = new McpServer({ name: 'claude-uds-bridge', version }, { instructi
   + 'and other configuration as the user set them, and send work that is blocked here to the user instead of to a peer.\n'
   + 'Keep working after asking a peer something. The answer arrives in this turn or starts the next one.\n'
   + 'To hear when a peer finishes, set notify_when_idle once and carry on with other work.\n'
-  + 'socket-written, accepted, started and steered report transport progress. A model answer is a separate event, '
+  + 'socket-written, queued, accepted, started and steered report transport progress. A model answer is a separate event, '
   + 'and an outcome that comes back unknown needs a status check before any resend.\n'
+  + 'Choose delivery: steer joins the active turn or starts one when idle; queue waits in the recipient native Desktop queue. Use queue only when list_sessions advertises it.\n'
+  + 'Claude native SendMessage has no bridge delivery argument: ask it to start message text with [bridge:queue] on its own line when a queued reply is wanted.\n'
   + 'Answer a peer when it needs something from you.\n'
   + 'Settle who owns which files before two agents edit one repository. This plugin holds no locks.' });
 
@@ -62,19 +64,21 @@ server.registerTool('session_start', { description: 'Bind the native SessionStar
   return { content: [] };
 });
 
-server.registerTool('list_sessions', { description: 'List the live local agents, most recently started first. Pick one by sessionId: names and working directories repeat across agents, and status tells you idle or busy right now, not how long an agent has sat idle. Start time separates them.',
+server.registerTool('list_sessions', { description: 'List live local agents with sessionId, agent kind, advertised deliveryModes, and bridgeVersion, most recently started first. Choose queue only for peers advertising it; native queue delivery also requires Desktop v13. Names and directories can repeat; status is current, and startedAt identifies the session start.',
   inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false } }, async (_args, extra) =>
   result(peers(configDir).filter(peer => peer.sessionId !== callerThread(extra._meta))
     .map(peer => ({ sessionId: peer.sessionId, name: peer.name,
       agent: peer.entrypoint === 'codex-claude-uds-bridge' ? 'codex' : 'claude',
       cwd: peer.cwd, status: peer.status,
+      deliveryModes: ['steer', ...(peer.peerFeatures.includes('delivery_queue') ? ['queue'] : [])],
+      bridgeVersion: peer.bridgeVersion ?? null,
       startedAt: peer.startedAt === undefined ? null : new Date(peer.startedAt).toISOString() }))
     .sort((first, second) => (second.startedAt ?? '').localeCompare(first.startedAt ?? ''))));
-server.registerTool('send_message', { description: 'Send text to one listed agent, or set notify_when_idle alone to subscribe without sending. Its answer enters the current Codex turn, or starts one when this task is idle. Batch what you have to say into one message: a rapid burst to the same agent is refused.',
+server.registerTool('send_message', { description: 'Send text to a listed session. delivery=steer (default) joins its active turn or starts one when idle. delivery=queue waits in its native Desktop queue until the active turn finishes; the peer must advertise queue in list_sessions and use Desktop v13. Unsupported queue requests are refused without steering. queued means admission, not execution or a reply. notify_when_idle alone subscribes without sending. Batch related text into one message; rapid bursts are refused.',
   inputSchema: { sessionId: uuid, text: z.string().min(1).max(maxLineLength).optional(), notify_when_idle: z.boolean().default(false),
-    delivery: z.enum(['steer', 'queue']).default('steer').describe('steer joins an active turn; queue requires a bridge peer advertising delivery_queue and native Desktop v13 queue support.') }, annotations: { openWorldHint: true } },
+    delivery: z.enum(['steer', 'queue']).default('steer').describe('steer (default): join the active turn, or start one when idle. queue: enqueue for after the active turn; requires advertised queue support and Desktop v13. Unsupported queue is refused, never converted to steer.') }, annotations: { openWorldHint: true } },
   async ({ sessionId, text, notify_when_idle, delivery }, extra) => result(await current(extra._meta).sendMessage(sessionId, text, notify_when_idle, delivery)));
-server.registerTool('status', { description: 'Show this task receiver, selected transport, and recent transport outcomes. A replyAddress of null means the receiver is inactive; check hook trust and the startup hook result. Read an unknown outcome here before deciding whether to resend.',
+server.registerTool('status', { description: 'Show this chat receiver, pluginVersion, receiverVersion, transportPath, last startup error, and recent message outcomes. queued means admitted to the native queue, not consumed. If replyAddress is null, run diagnose before recover_receiver. Inspect unknown outcomes before any resend.',
   inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false } },
   async (_args, extra) => result(current(extra._meta).status()));
 server.registerTool('diagnose', { description: 'Read receiver startup errors, MCP/receiver versions, and transport reachability for this chat without sending input or changing settings.',

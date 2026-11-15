@@ -359,7 +359,8 @@ test('list_sessions names the agent kind and start time and leaves out the calli
   const f = await fixture();
   const client = new Client({ name: 'list-test', version: '1.0.0' });
   const rows = z.array(z.object({ sessionId: z.string(), name: z.string(), agent: z.string(),
-    cwd: z.string(), status: z.string(), startedAt: z.string().nullable() }));
+    cwd: z.string(), status: z.string(), startedAt: z.string().nullable(),
+    deliveryModes: z.array(z.enum(['steer', 'queue'])), bridgeVersion: z.string().nullable() }));
   const list = async (threadId: string) => rows.parse(JSON.parse(z.array(z.object({ text: z.string() }))
     .parse((await client.callTool({ name: 'list_sessions', arguments: {}, _meta: { threadId } })).content)[0]!.text));
   try {
@@ -368,10 +369,12 @@ test('list_sessions names the agent kind and start time and leaves out the calli
     // A Codex task must not offer itself as a target, and a Claude peer has to read as one.
     const seen = await list(f.desktop.threadId);
     expect(seen.map(row => row.sessionId)).toEqual([f.peerId]);
-    expect(seen[0]).toMatchObject({ agent: 'claude', cwd: f.root, startedAt: new Date(1700000000000).toISOString() });
+    expect(seen[0]).toMatchObject({ agent: 'claude', cwd: f.root, startedAt: new Date(1700000000000).toISOString(),
+      deliveryModes: ['steer'], bridgeVersion: null });
     // Seen from another task, this receiver is a Codex peer and carries the start time that orders the list.
     const own = (await list(randomUUID())).find(row => row.sessionId === f.desktop.threadId);
-    expect(own).toMatchObject({ agent: 'codex', name: f.bridge.status().name });
+    expect(own).toMatchObject({ agent: 'codex', name: f.bridge.status().name, deliveryModes: ['steer', 'queue'] });
+    expect(own?.bridgeVersion).toBe(f.bridge.status().pluginVersion);
     expect(Date.parse(own?.startedAt ?? '')).toBeGreaterThan(1700000000000);
   } finally { await client.close(); await f.close(); }
 });

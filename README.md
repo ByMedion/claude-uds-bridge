@@ -73,7 +73,7 @@ flowchart LR
 
 The app-server transport uses `turn/start` with `toolOutput`, which starts or joins a turn at tool authority. The bridge reads existing settings and leaves approval requests to your UI. If the observer connection drops, status and permissions are `unknown` while the bridge reconnects for up to 30 seconds. If recovery fails, the receiver exits. A lost delivery acknowledgement stays `unknown` and is never resent.
 
-`send_message` addresses a peer by `sessionId`, not by name. An ambiguous registration is refused.
+`list_sessions` reports advertised `deliveryModes` and `bridgeVersion`. Choose queue only for a peer advertising it. `send_message` addresses a peer by `sessionId`, not by name; ambiguous registrations are refused.
 
 ## Choose steering or queue delivery
 
@@ -110,7 +110,7 @@ The sender sees Claude's status notices, among them `held`, `delivered`, `denied
 
 | Tool | Use |
 | --- | --- |
-| `list_sessions` | List local agents with ID, name, agent type, working directory, status, and start time. |
+| `list_sessions` | List IDs, names, agent kinds, advertised delivery modes, bridge versions, directories, status, and start time. |
 | `send_message` | Send text with `delivery: "steer"` or `"queue"`. Set `notify_when_idle` for one idle notice. |
 | `status` | Show the receiver and recent transport outcomes. |
 | `diagnose` | Show versions, startup errors, and transport reachability without submitting input. |
