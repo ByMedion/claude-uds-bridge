@@ -52,7 +52,7 @@ class DesktopConnection {
   private refreshing = false;
   private dirty = false;
 
-  constructor(path: string, readonly threadId: string, onDisconnect?: () => void) {
+  constructor(readonly path: string, readonly threadId: string, onDisconnect?: () => void) {
     checkSocket(path);
     this.socket = net.createConnection(path);
     this.socket.on('data', chunk => this.read(typeof chunk === 'string' ? Buffer.from(chunk) : chunk));
@@ -71,13 +71,13 @@ class DesktopConnection {
 
   async connectHost() {
     await once(this.socket, 'connect', { signal: AbortSignal.timeout(5000) });
-    const initialized = await this.request('initialize', { clientType: 'claude-uds-bridge' }, 0);
+    const initialized = await this.request('initialize', { clientType: 'claude-uds-bridge' }, 0, 3000);
     this.clientId = z.object({ clientId: z.string().min(1) }).parse(initialized.result).clientId;
   }
 
   async connect() {
     await this.connectHost();
-    const owner = await this.request('thread-owner-discovery', { hostId: 'local', conversationId: this.threadId }, 1);
+    const owner = await this.request('thread-owner-discovery', { hostId: 'local', conversationId: this.threadId }, 1, 3000);
     z.object({ supportsUntrustedAppInput: z.literal(true) }).parse(owner.result);
     this.ownerId = z.string().min(1).parse(owner.handledByClientId);
   }
@@ -91,11 +91,11 @@ class DesktopConnection {
     this.socket.write(frame);
   }
 
-  private async request(method: string, params: unknown, version: number) {
+  private async request(method: string, params: unknown, version: number, timeoutMs = 15000) {
     const id = randomUUID();
     const pending = Promise.withResolvers<Packet>();
     this.pending.set(id, pending);
-    const timer = setTimeout(() => pending.reject(new Error('Desktop request timed out; delivery may be unknown')), 15000);
+    const timer = setTimeout(() => pending.reject(new Error(`Desktop ${method} timed out at ${this.path}; delivery may be unknown`)), timeoutMs);
     try {
       this.write({ type: 'request', requestId: id, sourceClientId: this.clientId,
         ...(this.ownerId ? { targetClientId: this.ownerId } : {}), method, params, version, timeoutMs: 12000 });
@@ -115,7 +115,7 @@ class DesktopConnection {
   private async snapshot() {
     const pending = Promise.withResolvers<Snapshot>();
     this.snapshotResult = pending;
-    const timer = setTimeout(() => pending.reject(new Error('Desktop snapshot timed out')), 10000);
+    const timer = setTimeout(() => pending.reject(new Error(`Desktop snapshot timed out at ${this.path}`)), 3000);
     try { this.follow(true); return await pending.promise; }
     finally { clearTimeout(timer); this.snapshotResult = undefined; }
   }

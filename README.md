@@ -73,6 +73,10 @@ The app-server transport uses `turn/start` with `toolOutput`, which starts or jo
 
 `send_message` addresses a peer by `sessionId`, not by name. An ambiguous registration is refused.
 
+## Diagnose a receiver
+
+`status` reports the loaded plugin and receiver versions, selected transport path, and the last receiver startup result. `diagnose` probes this chat's transport without submitting input and distinguishes missing/refused sockets, initialization timeouts, and unsupported stream versions.
+
 ## Control what arrives
 
 The receive setting belongs to one task. When the permission modes of sender and receiver differ, a native dialog opens, also between turns. Held text reaches the model only after you release it.
@@ -94,7 +98,8 @@ The sender sees Claude's status notices, among them `held`, `delivered`, `denied
 | --- | --- |
 | `list_sessions` | List local agents with ID, name, agent type, working directory, status, and start time. |
 | `send_message` | Send text to one agent. Set `notify_when_idle` for one notice when that agent next goes idle. |
-| `status` | Show the receiver and recent transport outcomes. |
+| `status` | Show receiver versions and recent transport outcomes. |
+| `diagnose` | Show startup errors and transport reachability without submitting input. |
 | `inbox` | Open a dialog where you set the receive policy and hold expiry, or review the oldest held message. |
 
 ## Limits

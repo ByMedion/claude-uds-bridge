@@ -7,6 +7,7 @@ import { maxLineLength, peers, uuid } from './claude';
 import { Bridge, expirySchema, policySchema } from './bridge';
 import { HeldDialogs } from './held-dialogs';
 import { version } from './version';
+import { diagnoseConnection } from './diagnostics';
 
 const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
 const codexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex');
@@ -75,6 +76,12 @@ server.registerTool('send_message', { description: 'Send text to one listed agen
 server.registerTool('status', { description: 'Show this task receiver, selected transport, and recent transport outcomes. A replyAddress of null means the receiver is inactive; check hook trust and the startup hook result. Read an unknown outcome here before deciding whether to resend.',
   inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false } },
   async (_args, extra) => result(current(extra._meta).status()));
+server.registerTool('diagnose', { description: 'Read receiver startup errors, MCP/receiver versions, and transport reachability for this chat without sending input or changing settings.',
+  inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false } }, async (_args, extra) => {
+  const bridge = current(extra._meta);
+  const status = bridge.status();
+  return result({ ...status, connection: await diagnoseConnection(bridge.ipcPath, bridge.threadId, status.replyAddress ? bridge.target() : undefined) });
+});
 server.registerTool('inbox', { description: 'Open a dialog the user answers. Use view policy to set accept, hold, refuse or default, view expiry to set how long a held message waits, and view held to put the oldest held message in front of the user. Only that answer releases held input, and the held text stays out of your context either way.',
   inputSchema: { view: z.enum(['policy', 'held', 'expiry']) }, annotations: { openWorldHint: false } }, async ({ view }, extra) => {
   const bridge = current(extra._meta);

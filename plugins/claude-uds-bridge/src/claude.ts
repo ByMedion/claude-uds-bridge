@@ -10,6 +10,7 @@ import { dirname, join, basename, isAbsolute } from 'node:path';
 import { once } from 'node:events';
 import { z } from 'zod';
 import { BurstBudget } from './guard';
+import { version } from './version';
 
 export const uuid = z.uuid();
 export const maxLineLength = 1048576;
@@ -21,6 +22,7 @@ const registry = z.object({
   peerProtocol: z.literal(1), procStart: z.string().optional(),
   entrypoint: z.string().optional(), startedAt: z.number().int().nonnegative().optional(),
   peerFeatures: z.array(z.string()).default([]),
+  bridgeVersion: z.string().optional(),
 });
 export type Peer = z.infer<typeof registry>;
 export const modeSchema = z.enum(['prompting', 'bypass']);
@@ -144,7 +146,7 @@ export async function register(configDir: string, sessionId: string, address: st
     startedAt: Date.now(), procStart: await processStart(process.pid), peerProtocol: 1,
     ...(process.platform === 'darwin' ? { pidDomain: 'darwin' } : {}),
     kind: 'interactive', entrypoint: 'codex-claude-uds-bridge', messagingSocketPath: socketPath(address),
-    status, statusUpdatedAt: Date.now(), peerFeatures: ['notify_idle'] };
+    status, statusUpdatedAt: Date.now(), bridgeVersion: version, peerFeatures: ['notify_idle'] };
   writeFileSync(path, JSON.stringify(record), { flag: 'wx', mode: 0o600 });
   const check = () => {
     const current = z.object({ sessionId: uuid, procStart: z.string() }).parse(ownedJson(path, 256 * 1024));

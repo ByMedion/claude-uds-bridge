@@ -8,6 +8,7 @@ import { deliverToCodex, readCodexInputs, readCodexRuntime, targetSchema, type T
 import { z } from 'zod';
 import { outboundServer, refreshReceiver, sendViaReceiver } from './outbound';
 import { PeerGuard } from './guard';
+import { version } from './version';
 
 type Message = { id: string; peer_id: string; direction: string; text: string; status: string; turn_id: string | null;
   peer_address: string | null; peer_start: string | null; from_mode: string | null; expires_at: number | null; kind: string;
@@ -43,6 +44,9 @@ export class Bridge {
       );
       CREATE TABLE IF NOT EXISTS lifecycle (
         singleton INTEGER PRIMARY KEY CHECK(singleton=1), generation TEXT NOT NULL, active INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS receiver_start (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1), cwd TEXT NOT NULL, error TEXT, updated_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS transport (
         singleton INTEGER PRIMARY KEY CHECK(singleton=1), kind TEXT NOT NULL, path TEXT NOT NULL
@@ -110,6 +114,11 @@ export class Bridge {
     this.db.run("UPDATE runtime SET status='unknown',mode='unknown' WHERE singleton=1");
     this.db.run('DELETE FROM peer_guard');
     return generation;
+  }
+
+  recordReceiverStart(cwd: string, error: string | null = null) {
+    this.db.run('INSERT INTO receiver_start VALUES (1,?,?,?) ON CONFLICT(singleton) DO UPDATE SET cwd=excluded.cwd,error=excluded.error,updated_at=excluded.updated_at',
+      [cwd, error, Date.now()]);
   }
 
   setTarget(target: Target) {
@@ -594,8 +603,10 @@ export class Bridge {
 
   status() {
     const receiver = peers(this.configDir).find(peer => peer.sessionId === this.threadId && peer.entrypoint === 'codex-claude-uds-bridge');
-    return { threadId: this.threadId, name: receiver?.name ?? null, replyAddress: receiver ? peerAddress(receiver.messagingSocketPath) : null,
-      transport: this.target().kind,
+    return { threadId: this.threadId, pluginVersion: version, receiverVersion: receiver?.bridgeVersion ?? null,
+      receiverStart: this.db.query<{ cwd: string; error: string | null; updated_at: number }, []>('SELECT cwd,error,updated_at FROM receiver_start WHERE singleton=1').get(),
+      name: receiver?.name ?? null, replyAddress: receiver ? peerAddress(receiver.messagingSocketPath) : null,
+      transport: this.target().kind, transportPath: this.target().path,
       runtime: this.runtime(),
       inboundPolicy: this.policy(), dialogExpiry: this.dialogExpiry(), heldCount: this.held().length, unreadCount: this.unreadCount(),
       idleRequests: this.db.query<Pick<Subscription, 'id' | 'peer_id' | 'direction'> & { status: string }, [number]>(

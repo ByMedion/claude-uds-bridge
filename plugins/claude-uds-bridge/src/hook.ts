@@ -84,9 +84,16 @@ async function runHook() {
     const active = receiver();
     if (active) {
       if (!active.procStart || await processStart(active.pid) !== active.procStart) throw new Error('Receiver process identity changed');
+      state.recordReceiverStart(event.cwd);
       return;
     }
-    await launchReceiver(state.beginSession());
+    const generation = state.beginSession();
+    state.recordReceiverStart(event.cwd);
+    try { await launchReceiver(generation); }
+    catch (error) {
+      state.recordReceiverStart(event.cwd, error instanceof Error ? error.message : 'Receiver startup failed');
+      throw error;
+    }
   } finally { await state.close(); }
 }
 
