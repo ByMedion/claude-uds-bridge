@@ -3,7 +3,7 @@
 This file compares the bridge with Claude Code's cross-session messaging. Sources:
 
 - [Cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging) and the [settings reference](https://code.claude.com/docs/en/settings-reference).
-- The installed Claude Code 2.1.288 binary, for frame handlers.
+- The installed Claude Code 2.1.288 binary, for the original frame handlers; 2.1.325 for the [local-chain investigation](HOP-CHAINS.md#modern-claude-local-chain-compatibility-gap).
 - [PeterSR's socket protocol notes](https://github.com/PeterSR/claude-code-socket-transport/tree/480bd83c0bf1c63161c5afdb0976bbff849c926b), which describe 2.1.233.
 - The Codex `rust-v0.159.2` source.
 
@@ -109,7 +109,7 @@ A socket write and a receipt are both separate from a model reply.
 | Sender burst | yes | 30, refilling 0.5 per second per target. A refusal writes no text and no subscription. A held receipt releases the budget. | protocol, guard |
 | Receiver repeats | yes | The same last text from one sender within 30 seconds is dropped. IDs are deduplicated permanently. | protocol |
 | Receiver rate | yes | Same budget, checked at delivery and at hold release. | protocol |
-| Hop chains | yes | Discard at ten own tokens or more than 28 entries. Outgoing frames append the own token, up to 32. The chain continues from the last confirmed peer input and resets on a confirmed non-peer input. This also caps a long legitimate A/B dialogue; see [contract options](HOP-CHAINS.md). | protocol, app-server, desktop, hop-dialogue |
+| Hop chains | partial | Discard at ten own tokens or more than 28 entries. Outgoing frames append the own token, up to 32. The chain continues from the last confirmed peer input and resets on a confirmed non-peer input. This also caps a long legitimate A/B dialogue. Native 2.1.325 verified-local `local_chain`, envelope compaction, and separate send accounting are not implemented; see [evidence and contract options](HOP-CHAINS.md). | protocol, app-server, desktop, hop-dialogue |
 | 50 unread accepted | yes | Only a native input ID frees a slot. Overflow drops with `queue-full`. | protocol |
 | Receipt handling | partial | The bridge correlates reason, drop reason, and IDs, and ignores late receipts. Repeated receipts are not summarized. | protocol |
 

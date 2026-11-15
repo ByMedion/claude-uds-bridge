@@ -1,6 +1,6 @@
 # Hop chains in long peer dialogues
 
-Investigation of fork 0.2.4 on 2026-11-15. This document characterizes the current behavior and proposes a future contract; it does not change the guard or add a reset parameter.
+Investigation of fork 0.2.4, updated for 0.2.5 and installed Claude Code 2.1.325 on 2026-11-15. This document characterizes the current behavior and proposes a future contract; it does not change the guard or add a reset parameter.
 
 ## Finding
 
@@ -19,7 +19,7 @@ Neither ending a turn nor switching `steer`/`queue` creates a new causal root. A
 
 `bun test test/hop-dialogue.test.ts` uses the real `Bridge`, SQLite, its current guard, and private Unix sockets with a synthetic Desktop v13 fixture. The other participant is a synthetic wire peer, not Claude or a model. No real messages, dropped-message bodies, or external project files are read.
 
-Both plausible peer behaviors are tested: preserving the received chain and appending its own token. This avoids treating an assumption about Claude's private implementation as an observed fact.
+The original cases preserve the received chain or append a stable peer token. A third case now models the verified-local compaction shape inspected in Claude Code 2.1.325: an opaque marker in the envelope and a separate `local_chain`. All three use a synthetic peer; none is a live Claude test.
 
 For a peer that appends its own token:
 
@@ -38,9 +38,34 @@ The sticky failure follows from provenance: a dropped reply never becomes the la
 
 The tests also show that new semantic work and cyclic forwarding with the same hop metadata receive the same decision. The data available to this guard does not establish which intent is true. This reproduces the reported failure mechanism; it is not an inspection of the original live incident's chain values.
 
+## Modern Claude local-chain compatibility gap
+
+Static inspection of the installed Claude Code **2.1.325** executable found a second chain channel. Its SHA-256 is `25fc2449e6a110a26e4bfa43a056ff5e7d4847d5cb6500a8c7b11bf93a130234`. This is an observation of a private implementation, not a documented API or a claim about all Claude versions. No runtime feature-flag values, real dropped-message bodies, or external project state were read.
+
+For local peers accepted as verified local, when local-hop counting is disabled by native policy:
+
+- The envelope carries a compact `hop-chain`; the uncompacted causal-chain tail is sent separately in the user frame's `local_chain` string. Both use up to 32 comma-separated 24-character lowercase hexadecimal tokens.
+- When replying to a local origin without separate full-chain metadata, Claude preserves its envelope chain and adds an opaque marker derived from it. When that metadata is available, Claude replaces the preceding compact marker instead. The full-chain tail still inherits the prior full-chain tail and appends the sender's stable process/address token.
+- Ingress accepts that extra lineage only for a verified-local origin. Native verification uses the connecting process credentials or required successful socket authentication, as well as the peer classification and sender-address checks. A claimed address or field alone is insufficient.
+- In this mode, ingress hop checks use the compact chain. Separate send-side counters bound automatic local relays since a genuine user prompt; they do not reset on each peer reply. Full lineage participates in deciding when that send-side backstop applies. Remote forwarding has separate accounting and can use the full chain.
+- The static policy object has `countLocalHops: false` and a local-relay ceiling of 100,000, with conservative validation-failure fallbacks of `true` and 20. Policy is dynamically supplied. These values do **not** establish the effective policy of any running session, and are not proposed bridge defaults.
+
+In fork 0.2.5, `frameSchema` strips `local_chain`, only envelope text is persisted for provenance, and outgoing messages always append the bridge's stable token. The synthetic modern-peer test therefore reproduces the same failure despite B sending `local_chain`:
+
+| Exchange | Request envelope | Reply envelope | Own visits at A | Outcome |
+| --- | --- | --- | --- | --- |
+| 9 | 17 tokens | 18 tokens | 9 | accepted |
+| 10 | 19 tokens | 20 tokens | 10 | `hop-loop` |
+
+B's successive compact markers differ, while A's token accumulates. This explains why a visible chain can contain ten repetitions of A and nine distinct intervening tokens. A distinct intervening token does not by itself prove a new peer process, an explicit reset, or a new causal root. The visible incident header is consistent with this mechanism; the test establishes reproduction, not the unseen contents or effective native policy of that incident.
+
+Merely preserving `local_chain` would retain evidence but would not fix the policy mismatch: applying the existing ten-visit guard to the full chain still stops the dialogue. Merely compacting outgoing envelopes would remove that backstop unless the separate bounded send accounting and verified-local eligibility were also implemented. The bridge currently has same-user registry/socket checks, not native connection-credential verification; it must not silently claim the stronger native trust classification.
+
+The next implementation decision is therefore a **bounded local-dialogue compatibility contract**, including sender eligibility, durable full lineage, an aggregate send ceiling, and reset only on a confirmed genuine user input. Keep legacy/unverified behavior, duplicate/rate/queue limits, and permission/inbox decisions intact. The earlier correlated request/reply candidate below remains an alternative, rather than a prerequisite imposed by the native wire format. No production codec, guard, or policy change is included in this investigation.
+
 ## Current reset behavior
 
-The 0.2.4 `send_message` schema has `sessionId`, `text`, `delivery`, and `notify_when_idle`. It has no `reset`, `new_chain`, or equivalent operation. No such public operation was found in the checked [Claude cross-session guide](https://code.claude.com/docs/en/cross-session-messaging) or [tools reference](https://code.claude.com/docs/en/tools-reference).
+The 0.2.5 `send_message` schema has `sessionId`, `text`, `delivery`, and `notify_when_idle`. It has no `reset`, `new_chain`, or equivalent operation. No such public operation was found in the checked [Claude cross-session guide](https://code.claude.com/docs/en/cross-session-messaging) or [tools reference](https://code.claude.com/docs/en/tools-reference).
 
 The code and existing tests establish a fresh chain after a confirmed new non-peer native input in the sending chat. A genuine new user instruction in that chat is one way to produce this. A prompt sent by the peer asking to reset is not equivalent. Unconfirmed steering and an unknown input origin must not be used as a reset.
 
@@ -58,7 +83,7 @@ The current hop limit bounds causally connected automation. Supporting an arbitr
 | Unrestricted model-selected `new_chain` | Gives any loop participant a reset primitive | Insufficient on its own |
 | Bounded, correlated request/reply exchanges | Can separate a new request from forwarding while retaining an aggregate bound | Candidate requiring an explicit contract |
 
-## Candidate for future implementation
+## Alternative: explicit request/reply contract
 
 A stronger request/reply contract would need all of the following, rather than a threshold change:
 

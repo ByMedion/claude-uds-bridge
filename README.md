@@ -135,7 +135,7 @@ The sender sees Claude's status notices, among them `held`, `delivered`, `denied
 
 What is missing compared with Claude Code is in [PROTOCOL-COVERAGE.md](plugins/claude-uds-bridge/PROTOCOL-COVERAGE.md). How other Codex and MCP bridges differ is in [COMPARISON.md](plugins/claude-uds-bridge/COMPARISON.md).
 
-Long peer dialogues can reach the causal hop limit even when each request and answer is new. New text, IDs, turns, and delivery modes do not reset it. See [hop-chain behavior and contract options](plugins/claude-uds-bridge/HOP-CHAINS.md) for the offline reproduction and current fresh-root behavior; no agent-controlled reset exists in 0.2.4.
+Long peer dialogues can reach the causal hop limit even when each request and answer is new. New text, IDs, turns, and delivery modes do not reset it. See [hop-chain behavior and contract options](plugins/claude-uds-bridge/HOP-CHAINS.md) for the offline reproduction, the native Claude 2.1.325 local-chain compatibility gap, and current fresh-root behavior; no agent-controlled reset exists in 0.2.5.
 
 ## Development
 

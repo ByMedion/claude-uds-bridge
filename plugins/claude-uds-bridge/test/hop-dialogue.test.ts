@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, chmodSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import net from 'node:net';
@@ -17,7 +17,8 @@ async function until(condition: () => boolean) {
 }
 
 // A is the real Bridge and guard. B is a synthetic wire peer, not a Claude model/runtime.
-// Both B behaviors are tested because native Claude's private chain construction was not inspected.
+// Legacy behaviors and the verified-local compaction shape inspected in Claude 2.1.325 are
+// synthetic fixtures. This test does not execute Claude or assume its effective remote policy.
 async function dialogue() {
   const root = mkdtempSync('/tmp/uds-dialogue-');
   const desktop = await receiver('idle', false, false, root, 13);
@@ -69,10 +70,12 @@ async function dialogue() {
     } };
 }
 
-for (const behavior of ['append', 'preserve'] as const) {
+for (const behavior of ['append', 'preserve', 'local-compact'] as const) {
   test(`a long new-request/new-answer dialogue reaches hop-loop with B=${behavior}`, async () => {
     const f = await dialogue();
     const bToken = randomBytes(12).toString('hex');
+    const bSecret = randomBytes(32);
+    const compactMarkers = new Set<string>();
     const rows: { round: number; requestHops: number; replyHops: number; ownVisits: number; status: string; reason: string | null }[] = [];
     let aToken = '';
     const exchange = async (round: number) => {
@@ -85,11 +88,21 @@ for (const behavior of ['append', 'preserve'] as const) {
       const requestChain = hopChain(outbound.message.content);
       aToken ||= requestChain[0]!;
       const id = randomUUID();
+      // A does not send local_chain, so B inherits only the envelope chain. A modern
+      // verified-local B adds an opaque marker there and sends its full chain separately.
+      const marker = createHmac('sha256', bSecret).update(requestChain.join(',')).digest('hex').slice(0, 24);
       const reply = userFrame(findPeer(f.configDir, f.desktop.threadId), peerAddress(f.peerPath),
         'synthetic-orchestrator', f.peerId, id, `New answer ${round} to work item ${round}; this is not a forwarded payload.`,
-        'prompting', behavior === 'append' ? bToken : null, requestChain);
+        'prompting', behavior === 'append' ? bToken : behavior === 'local-compact' ? marker : null, requestChain);
+      const wireReply = behavior === 'local-compact'
+        ? { ...reply, local_chain: [...requestChain, bToken].slice(-32).join(',') } : reply;
+      if (behavior === 'local-compact') {
+        compactMarkers.add(marker);
+        // Characterize the current compatibility gap: frame parsing strips this metadata.
+        expect(frameSchema.parse(wireReply)).not.toHaveProperty('local_chain');
+      }
       const chain = hopChain(reply.message.content);
-      await sendFrames(f.configDir, findPeer(f.configDir, f.desktop.threadId), [reply]);
+      await sendFrames(f.configDir, findPeer(f.configDir, f.desktop.threadId), [wireReply]);
       await until(() => f.bridge.status().messages.some(message => message.id === id && ['started', 'dropped'].includes(message.status)));
       const result = f.bridge.status().messages.find(message => message.id === id)!;
       rows.push({ round, requestHops: requestChain.length, replyHops: chain.length,
@@ -104,6 +117,13 @@ for (const behavior of ['append', 'preserve'] as const) {
         .toEqual([[10, 10, 'dropped', 'hop-loop'], [11, 10, 'dropped', 'hop-loop'], [12, 10, 'dropped', 'hop-loop']]);
       expect(rows[10]!.requestHops).toBe(rows[9]!.requestHops);
       expect(f.desktop.submissions).toHaveLength(9);
+      if (behavior === 'local-compact') {
+        expect(rows[8]!.replyHops).toBe(18);
+        expect(rows[9]!.requestHops).toBe(19);
+        expect(rows[9]!.replyHops).toBe(20);
+        // Ten distinct markers through round 10; retries inherit the same dropped lineage.
+        expect(compactMarkers.size).toBe(10);
+      }
       expect(f.bridge.status().inboundPolicy).toBe('default');
       expect(f.bridge.status().heldCount).toBe(0);
       // Only a confirmed non-peer input changes the source selected by outgoingHops.
