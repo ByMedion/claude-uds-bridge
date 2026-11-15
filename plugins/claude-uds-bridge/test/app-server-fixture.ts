@@ -5,13 +5,12 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { WebSocketServer } from 'ws';
 
-export async function appServer(root = mkdtempSync('/tmp/codex-app-')) {
+export async function appServer(root = mkdtempSync('/tmp/codex-app-'), threadId = randomUUID()) {
   const directory = join(root, 'app-server-control');
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const path = join(directory, 'app-server-control.sock');
   const server = createServer();
   const sockets = new WebSocketServer({ server });
-  const threadId = randomUUID();
   const turnId = randomUUID();
   const submissions: { method: string; params: Record<string, unknown> }[] = [];
   const responses: unknown[] = [];

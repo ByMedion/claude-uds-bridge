@@ -4,7 +4,7 @@
 // https://code.claude.com/docs/en/cross-session-messaging#the-sessions-inbox-socket
 // https://github.com/PeterSR/claude-code-socket-transport/tree/480bd83c0bf1c63161c5afdb0976bbff849c926b
 import net from 'node:net';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { constants, openSync, closeSync, fstatSync, readFileSync, readdirSync, lstatSync, chmodSync, mkdirSync, writeFileSync, unlinkSync, renameSync } from 'node:fs';
 import { dirname, join, basename, isAbsolute } from 'node:path';
 import { once } from 'node:events';
@@ -15,6 +15,7 @@ import type { DeliveryMode } from './desktop';
 
 export const uuid = z.uuid();
 export const maxLineLength = 1048576;
+export const chainPattern = /^[a-f0-9]{24}(?:,[a-f0-9]{24}){0,31}$/;
 const sendBudget = new BurstBudget();
 export class SendRefused extends Error {}
 const registry = z.object({
@@ -30,7 +31,7 @@ export const modeSchema = z.enum(['prompting', 'bypass']);
 export const frameSchema = z.union([
   z.object({ msgV: z.literal(1), type: z.literal('user'), msg_id: uuid, from: z.string(),
     session_id: uuid.optional(), priority: z.enum(['now', 'next', 'later']).optional(),
-    file_attachments: z.array(z.unknown()).optional(),
+    file_attachments: z.array(z.unknown()).optional(), local_chain: z.string().regex(chainPattern).optional(),
     message: z.object({ role: z.literal('user'), content: z.string().min(1).max(maxLineLength) }) }),
   z.object({ msgV: z.literal(1), type: z.literal('control'), from: z.string(), session_id: uuid.optional(),
     action: z.literal('peer_message_status'), orig_msg_id: uuid,
@@ -148,7 +149,7 @@ export async function register(configDir: string, sessionId: string, address: st
     ...(process.platform === 'darwin' ? { pidDomain: 'darwin' } : {}),
     kind: 'interactive', entrypoint: 'codex-claude-uds-bridge', messagingSocketPath: socketPath(address),
     status, statusUpdatedAt: Date.now(), bridgeVersion: version,
-    peerFeatures: ['notify_idle', ...(queueDelivery ? ['delivery_queue'] : [])] };
+    peerFeatures: ['notify_idle', 'local_chain', ...(queueDelivery ? ['delivery_queue'] : [])] };
   writeFileSync(path, JSON.stringify(record), { flag: 'wx', mode: 0o600 });
   const check = () => {
     const current = z.object({ sessionId: uuid, procStart: z.string() }).parse(ownedJson(path, 256 * 1024));
@@ -168,7 +169,42 @@ export async function register(configDir: string, sessionId: string, address: st
   };
 }
 
-export async function inbox(directory: string, receive: (frame: Frame) => void) {
+export function publishPeerKey(configDir: string, address: string, procStart: string, token: string) {
+  const directory = join(configDir, 'sessions');
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  privateDirectory(directory);
+  const hash = createHash('sha256').update(socketPath(address)).digest('hex');
+  const path = join(directory, `${process.pid}.${hash}.key`);
+  const data = JSON.stringify({ peerToken: token, procStart });
+  try { writeFileSync(path, data, { flag: 'wx', mode: 0o600 }); }
+  catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
+    // A hard-killed process can leave a key at a PID later reused by this receiver.
+    // Never follow a link or overwrite a key from this same process incarnation.
+    const old = z.object({ peerToken: z.string().regex(/^[a-f0-9]{32}$/), procStart: z.string() }).parse(ownedJson(path, 4096));
+    if (old.procStart === procStart) throw new Error('Receiver key already belongs to this process');
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    writeFileSync(temporary, data, { flag: 'wx', mode: 0o600 });
+    try { renameSync(temporary, path); }
+    catch (replaceError) { unlinkSync(temporary); throw replaceError; }
+  }
+  return () => {
+    const key = z.object({ peerToken: z.string(), procStart: z.string() }).parse(ownedJson(path, 4096));
+    if (key.peerToken !== token || key.procStart !== procStart) throw new Error('Receiver key changed');
+    unlinkSync(path);
+  };
+}
+
+// Local-chain eligibility comes from the authenticated socket, never a JSON trust flag.
+// A modern sender must also use an unambiguous native envelope bound to its registry address.
+export function localChain(frame: Extract<Frame, { type: 'user' }>, peer: Peer, authenticated: boolean) {
+  if (!authenticated || !peer.procStart || frame.from !== peerAddress(peer.messagingSocketPath)) return false;
+  const header = /^<cross-session-message from="([^"\r\n]+)"(?: from-session="([^"\r\n]+)")?(?: hop-chain="([a-f0-9,]+)")?(?: from-name="[^"<>\r\n]+")?(?: from-mode="[^"<>\r\n]+")?(?: from-plugin="[^"<>\r\n]+")?>\n[\s\S]*\n<\/cross-session-message>$/.exec(frame.message.content);
+  return !!header && header[1] === frame.from && (!header[2] || header[2] === peer.sessionId)
+    && (!header[3] || chainPattern.test(header[3]));
+}
+
+export async function inbox(directory: string, receive: (frame: Frame, authenticated: boolean) => void, token?: string) {
   privateDirectory(directory);
   const path = join(directory, `${process.pid}.sock`);
   const sockets = new Set<net.Socket>();
@@ -180,6 +216,7 @@ export async function inbox(directory: string, receive: (frame: Frame) => void) 
     const deadline = setTimeout(() => socket.destroy(), 30000);
     socket.once('close', () => clearTimeout(deadline));
     let buffer = '';
+    let first = true, authenticated = false;
     socket.on('data', chunk => {
       buffer += chunk;
       let end: number;
@@ -189,8 +226,19 @@ export async function inbox(directory: string, receive: (frame: Frame) => void) 
         const line = buffer.slice(0, end);
         buffer = buffer.slice(end + 1);
         try {
-          const parsed = frameSchema.safeParse(JSON.parse(line));
-          if (parsed.success) receive(parsed.data);
+          const value = JSON.parse(line);
+          if (first && value?.type === 'auth') {
+            first = false;
+            if (token) {
+              if (typeof value.token !== 'string' || !/^[a-f0-9]{32}$/.test(value.token)
+                || !timingSafeEqual(Buffer.from(value.token), Buffer.from(token))) return void socket.destroy();
+              authenticated = true;
+            }
+            continue;
+          }
+          first = false;
+          const parsed = frameSchema.safeParse(value);
+          if (parsed.success) receive(parsed.data, authenticated);
         } catch { socket.destroy(); return; }
       }
       if (buffer.length > maxLineLength) socket.destroy();
@@ -220,11 +268,14 @@ export function hopChain(text: string) {
 }
 
 // fromName must be the registered name: the receiver replies to what its ListAgents listing shows.
-export function userFrame(peer: Peer, address: string, fromName: string, fromSession: string, id: string, text: string, mode: string, token: string | null, previous: string[] = [], delivery: DeliveryMode = 'steer') {
+export function userFrame(peer: Peer, address: string, fromName: string, fromSession: string, id: string, text: string, mode: string, token: string | null, previous: string[] = [], delivery: DeliveryMode = 'steer', local?: { fullChain: string[]; secret: string; replaceLast: boolean }) {
   const body = ((delivery === 'queue' ? '[bridge:queue]\n' : '') + text).replaceAll('</cross-session-message', '<\\/cross-session-message');
-  const chain = [...previous, ...(token ? [token] : [])].slice(-32).join(',');
+  const fullChain = [...(local?.fullChain ?? previous), ...(token ? [token] : [])].slice(-32).join(',');
+  const chain = local
+    ? [...(local.replaceLast ? previous.slice(0, -1) : previous), createHmac('sha256', local.secret).update(previous.join(',')).digest('hex').slice(0, 24)].join(',')
+    : fullChain;
   return { msgV: 1, msg_id: id, type: 'user', priority: delivery === 'queue' ? 'later' : 'next', from: address,
-    session_id: peer.sessionId, message: { role: 'user', content:
+    session_id: peer.sessionId, ...(local && { local_chain: fullChain }), message: { role: 'user', content:
       `<cross-session-message from="${address}" from-session="${fromSession}"${chain ? ` hop-chain="${chain}"` : ''} from-name="${fromName}"${modeSchema.safeParse(mode).success ? ` from-mode="${mode}"` : ''}>\n${body}\n</cross-session-message>` } };
 }
 

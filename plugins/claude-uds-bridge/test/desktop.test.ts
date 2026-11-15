@@ -8,15 +8,15 @@ test('only committed input continues peer context; pending steering cannot repla
   const desktop = await receiver('active');
   const peer = randomUUID();
   const serverId = randomUUID();
-  const user = { type: 'userMessage', id: randomUUID(), clientId: null };
+  const user = { type: 'userMessage', id: randomUUID(), clientId: null, user: true };
   const steering = { type: 'steeringUserMessage', id: peer, clientUserMessageId: peer,
     status: 'accepted', serverUserMessageId: null };
   try {
     desktop.setHistory({ turns: [{ items: [user, steering] }] });
-    expect((await readDesktopInputs(desktop.path, desktop.threadId)).latest).toEqual({ id: user.id, clientId: null });
+    expect((await readDesktopInputs(desktop.path, desktop.threadId)).latest).toEqual({ id: user.id, clientId: null, user: true });
     desktop.setHistory({ turns: [{ items: [user, { ...steering, serverUserMessageId: serverId }, { type: 'steered', id: serverId }] }] });
-    const input = { id: serverId, clientId: peer };
-    expect(await readDesktopInputs(desktop.path, desktop.threadId)).toEqual({ latest: input, consumed: [{ id: user.id, clientId: null }, input] });
+    const input = { id: serverId, clientId: peer, user: true };
+    expect(await readDesktopInputs(desktop.path, desktop.threadId)).toEqual({ latest: input, consumed: [{ id: user.id, clientId: null, user: true }, input] });
     desktop.setHistory({ turns: [{ items: [{ ...steering, serverUserMessageId: serverId }, { type: 'steered', id: serverId }, user] }] });
     expect((await readDesktopInputs(desktop.path, desktop.threadId)).latest?.clientId).toBeNull();
   } finally { await desktop.close(); }
@@ -30,7 +30,7 @@ test('canonical history follows island order and refuses an incomplete latest hi
     islands: [{ entries: [{ value: 'first' }, { value: 'last' }], olderBoundary: { status: 'exhausted' }, newerBoundary: { status: 'exhausted' } }] };
   try {
     desktop.setHistory({ turns: [], turnHistory: { kind: 'canonical', history } });
-    expect((await readDesktopInputs(desktop.path, desktop.threadId)).latest).toEqual({ id: last.id, clientId: last.clientId });
+    expect((await readDesktopInputs(desktop.path, desktop.threadId)).latest).toEqual({ id: last.id, clientId: last.clientId, user: true });
     history.islands[0]!.newerBoundary.status = 'loading';
     desktop.setHistory({ turns: [], turnHistory: { kind: 'canonical', history } });
     expect((await readDesktopInputs(desktop.path, desktop.threadId)).latest).toBeUndefined();
@@ -93,14 +93,14 @@ test('large task histories preserve observation, input attribution and delivery'
   const states: Runtime[] = [];
   let disconnected = false;
   const close = await watchDesktop(desktop.path, desktop.threadId, state => states.push(state), () => { disconnected = true; });
-  const user = { type: 'userMessage', id: randomUUID(), clientId: null };
+  const user = { type: 'userMessage', id: randomUUID(), clientId: null, user: true };
   try {
     desktop.setHistory({ turns: [{ items: [
       { type: 'agentMessage', id: randomUUID(), text: 'x'.repeat(17 * 1024 * 1024) }, user,
     ] }] });
     desktop.setState('active');
     expect(await readDesktopInputs(desktop.path, desktop.threadId))
-      .toEqual({ latest: { id: user.id, clientId: null }, consumed: [{ id: user.id, clientId: null }] });
+      .toEqual({ latest: { id: user.id, clientId: null, user: true }, consumed: [{ id: user.id, clientId: null, user: true }] });
     expect(await deliverToDesktop(desktop.path, desktop.threadId, randomUUID(), 'reply after a long task'))
       .toEqual({ status: 'steered', turnId: desktop.turnId });
     desktop.setState('idle');

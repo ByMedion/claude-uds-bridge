@@ -1,8 +1,22 @@
 # Hop chains in long peer dialogues
 
-Investigation of fork 0.2.4, updated for 0.2.5 and installed Claude Code 2.1.325 on 2026-11-15. This document characterizes the current behavior and proposes a future contract; it does not change the guard or add a reset parameter.
+Fork 0.2.6 implements the bounded local-dialogue contract below. The earlier 0.2.4/0.2.5 investigation and Claude Code 2.1.325 evidence are retained as background. There is no agent-controlled reset parameter.
 
-## Finding
+## Implemented local-dialogue contract (0.2.6)
+
+Modern local peers use a short envelope chain and a separate `local_chain` tail, each limited to 32 tokens. The native-format receiver key is published privately next to its registry row. Only a valid first-line authentication token, a live process/start-time registry match, and a native envelope bound to that sender permit local compaction. A JSON `verifiedLocal` flag grants nothing. Kernel peer credentials are still unavailable in regular Bun; this remains a same-user transport, using the native socket-token alternative for authentication.
+
+Full-chain tails are persisted separately, together with authentication eligibility and outbound parent native-input IDs. Outgoing envelopes replace the preceding compact marker rather than appending another stable own token; the full tail appends that token. A native peer becomes a known modern target after a verified `local_chain` is received, while bridge peers advertise `local_chain`. Legacy targets receive the full tail in the envelope. Unknown or unauthenticated peers retain legacy hop behavior. The existing ten-own-token/28-entry ingress guard, duplicate/rate limits, inbox decisions and permissions remain in force on the applicable envelope.
+
+All ordinary outgoing text shares a **100-send budget per Codex chat**, across recipients, MCP processes, lifecycle hooks and receiver restarts. The 101st send is refused before text or an attached idle subscription is written. A confirmed new native user input renews it exactly once, provided it is not mapped to any bridge delivery, including an idle notice. A replayed user-input ID, peer reply, new message ID, tool output, idle/turn boundary, unknown history, or restart does not renew it. Only the latest confirmed native input is considered for renewal; older inputs from an incomplete history are not guessed to be new user instructions.
+
+Standalone control/idle subscriptions do not consume text allowance. A definite `SendRefused` before writing returns its reservation once, within the original human-input epoch; unknown outcomes stay charged. Exhaustion requires human input in the sending chat. It is not a request to ask another agent to reset, reroute, or replay a dropped approval. `status.automaticMessageBudget` exposes `limit`, `used`, `remaining` and `lastHumanInputId`.
+
+The budget and compaction secret live in the existing per-chat SQLite database and are not reset by SessionStart/End. Before the first confirmed input in a new chat, the initial allowance is also bounded at 100. Installing this version does not replay old dropped messages or automatically restart active older receivers. Restart Codex to load the new MCP and receiver, then obtain a fresh delivered response for any work depending on a dropped reply.
+
+Offline tests cover 100 sends with native-shaped local compaction through the receiver's outbound adapter, two/three-party cycles and recipient changes, full-tail truncation, MCP/receiver restart, refusal of send 101, renewed send after human input, four competing reservation processes, authentication spoofing, malformed chains, legacy behavior, held/queued lineage, and input-origin classification. These are synthetic wire peers and a Desktop fixture, not a live Claude acceptance run.
+
+## Historical finding in 0.2.4/0.2.5
 
 The guard measures repeated visits in a causal input lineage. It does not count third-party relays exclusively and does not classify the meaning of a message. Consequently, a legitimate executor/orchestrator conversation with different requests and answers can hit the same limit as a feedback loop.
 
@@ -19,7 +33,7 @@ Neither ending a turn nor switching `steer`/`queue` creates a new causal root. A
 
 `bun test test/hop-dialogue.test.ts` uses the real `Bridge`, SQLite, its current guard, and private Unix sockets with a synthetic Desktop v13 fixture. The other participant is a synthetic wire peer, not Claude or a model. No real messages, dropped-message bodies, or external project files are read.
 
-The original cases preserve the received chain or append a stable peer token. A third case now models the verified-local compaction shape inspected in Claude Code 2.1.325: an opaque marker in the envelope and a separate `local_chain`. All three use a synthetic peer; none is a live Claude test.
+The original cases preserve the received chain or append a stable peer token. A third legacy case sends the compaction shape inspected in Claude Code 2.1.325 without the required authentication/process evidence: an opaque marker in the envelope and a separate `local_chain`. All three use a synthetic peer; none is a live Claude test.
 
 For a peer that appends its own token:
 
@@ -61,7 +75,7 @@ B's successive compact markers differ, while A's token accumulates. This explain
 
 Merely preserving `local_chain` would retain evidence but would not fix the policy mismatch: applying the existing ten-visit guard to the full chain still stops the dialogue. Merely compacting outgoing envelopes would remove that backstop unless the separate bounded send accounting and verified-local eligibility were also implemented. The bridge currently has same-user registry/socket checks, not native connection-credential verification; it must not silently claim the stronger native trust classification.
 
-The next implementation decision is therefore a **bounded local-dialogue compatibility contract**, including sender eligibility, durable full lineage, an aggregate send ceiling, and reset only on a confirmed genuine user input. Keep legacy/unverified behavior, duplicate/rate/queue limits, and permission/inbox decisions intact. The earlier correlated request/reply candidate below remains an alternative, rather than a prerequisite imposed by the native wire format. No production codec, guard, or policy change is included in this investigation.
+This evidence motivated the bounded local-dialogue contract implemented in 0.2.6 above. The earlier correlated request/reply candidate below remains an alternative, rather than a prerequisite imposed by the native wire format.
 
 ## Current reset behavior
 
@@ -96,4 +110,4 @@ A stronger request/reply contract would need all of the following, rather than a
 
 Request/reply labels distinguish protocol relationships, not the truth of an agent's semantic claim. An aggregate scope budget or user-controlled renewal is necessary if protection must also cover agents that keep declaring new requests. The scope size and renewal rule are product decisions still to be made.
 
-Until that contract is selected, the runtime guard remains unchanged. Dropped text must not be replayed or treated as an approval; a fresh, actually delivered reply is needed for any work depending on it.
+The 0.2.6 implementation uses the bounded native local-dialogue contract instead of these explicit request/reply extensions. Dropped text must not be replayed or treated as an approval; a fresh, actually delivered reply is needed for any work depending on it.

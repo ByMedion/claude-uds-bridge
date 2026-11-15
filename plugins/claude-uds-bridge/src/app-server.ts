@@ -140,12 +140,12 @@ export class AppServer {
       const page = pageSchema.parse(await this.request('thread/items/list', { threadId: this.threadId, cursor, limit: 100, sortDirection: 'desc' }));
       for (const { item } of page.data) {
         let input: Input | undefined;
-        if (item.type === 'userMessage') input = { id: item.id, clientId: item.clientId ?? null };
-        if (item.type === 'functionCallOutput') input = { id: item.id, clientId: null };
+        if (item.type === 'userMessage') input = { id: item.id, clientId: item.clientId ?? null, user: true };
+        if (item.type === 'functionCallOutput') input = { id: item.id, clientId: null, user: false };
         if (item.type === 'functionCallOutput' && item.name === 'peer_message' && item.namespace === 'claude_uds_bridge') {
           if (typeof item.output !== 'string') throw new Error('Invalid peer input correlation');
           const marker = markerSchema.parse(JSON.parse(item.output));
-          input = { id: item.id, clientId: marker.inputId };
+          input = { id: item.id, clientId: marker.inputId, user: false };
         }
         if (input) {
           latest ??= input;

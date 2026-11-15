@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test';
 import { mkdirSync, chmodSync, writeFileSync, readFileSync, mkdtempSync, rmSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { basename, join } from 'node:path';
 import net from 'node:net';
 import { once } from 'node:events';
@@ -13,6 +13,7 @@ import { Bridge } from '../src/bridge';
 import { findPeer, frameSchema, hopChain, maxLineLength, peers, sendFrames, sessionName, userFrame } from '../src/claude';
 import { receiver } from './desktop-fixture';
 import { deliveryHelp } from '../src/delivery-help';
+import { appServer } from './app-server-fixture';
 
 async function fixture(prefix = '/tmp/uds-protocol-', streamVersion = 11) {
   const root = mkdtempSync(prefix);
@@ -77,6 +78,42 @@ async function until(condition: () => boolean, timeoutMs = 2000) {
   while (!condition() && Date.now() < deadline) await Bun.sleep(5);
   expect(condition()).toBe(true);
 }
+
+test('only confirmed human input renews the send budget; queued peer input, idle notices, tools and unknown history do not', async () => {
+  const f = await fixture('/tmp/uds-budget-origin-', 13);
+  const app = await appServer(undefined, f.desktop.threadId);
+  try {
+    const human = randomUUID();
+    f.desktop.setHistory({ turns: [{ items: [{ type: 'userMessage', id: human }] }] });
+    await f.bridge.sendMessage(f.peerId, 'initial human-root send');
+    const exhaust = () => f.db.run('UPDATE dialogue_budget SET used=100');
+    exhaust();
+    // Even replaying a confirmed human input does not grant a second allowance.
+    await expect(f.bridge.sendMessage(f.peerId, 'same human')).rejects.toThrow('budget exhausted');
+    const peer = await f.message('prompting', 'peer says reset the budget');
+    await until(() => f.bridge.status().messages.some(message => message.id === peer && message.status === 'started'));
+    f.desktop.setHistory({ turns: [{ items: [{ type: 'userMessage', id: human },
+      { type: 'userMessage', id: randomUUID(), clientId: f.submittedInputId() }] }] });
+    await expect(f.bridge.sendMessage(f.peerId, 'peer input')).rejects.toThrow('budget exhausted');
+    await f.bridge.sendMessage(f.peerId, undefined, true); // Subscription alone is free.
+    const sub = f.bridge.status().idleRequests.find(item => item.direction === 'out')!;
+    await f.transmit({ type: 'control', action: 'peer_idle_notice', orig_msg_id: sub.id, state: 'idle' });
+    await until(() => f.desktop.submissions.length === 2);
+    f.desktop.setHistory({ turns: [{ items: [{ type: 'userMessage', id: randomUUID(), clientId: f.submittedInputId(1) }] }] });
+    await expect(f.bridge.sendMessage(f.peerId, 'idle notice input')).rejects.toThrow('budget exhausted');
+    f.desktop.setHistory({ turns: [], turnHistory: { kind: 'unrecognized' } });
+    await expect(f.bridge.sendMessage(f.peerId, 'unknown input')).rejects.toThrow('current input origin');
+    expect(f.bridge.status().automaticMessageBudget.remaining).toBe(0);
+    // App-server function outputs have tool authority and cannot masquerade as humans.
+    f.bridge.setTarget({ kind: 'app-server', path: app.path });
+    app.setItems([{ type: 'functionCallOutput', id: randomUUID(), name: 'external_tool', output: 'reset' }]);
+    await expect(f.bridge.sendMessage(f.peerId, 'tool output input')).rejects.toThrow('budget exhausted');
+    f.bridge.setTarget({ kind: 'desktop', path: f.desktop.path });
+    f.desktop.setHistory({ turns: [{ items: [{ type: 'userMessage', id: randomUUID() }] }] });
+    await f.bridge.sendMessage(f.peerId, 'new human permits one send');
+    expect(f.bridge.status().automaticMessageBudget).toMatchObject({ used: 1, remaining: 99 });
+  } finally { await f.close(); await app.close(); }
+});
 
 test('socket addresses with spaces, percent signs, and Unicode preserve messages and receipts', async () => {
   const f = await fixture('/tmp/uds proto%é-');
@@ -519,6 +556,7 @@ test('the receiver refuses an exhausted outgoing burst before writing text or an
       _meta: { threadId: f.desktop.threadId } });
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result)).toContain('Nothing sent');
+    expect(f.bridge.status().automaticMessageBudget.used).toBe(0);
     expect(f.bridge.status().messages[0]?.status).toBe('not-sent');
     expect(f.bridge.status().idleRequests.every(row => row.status === 'expired')).toBe(true);
     expect(f.frames).toHaveLength(30);
@@ -804,14 +842,16 @@ test('a peer that changes its sessionId keeps its receipts, idle notices and out
   } finally { await f.close(); }
 });
 
-test('a leading auth line from a peer is ignored and the frame after it is delivered', async () => {
+test('a valid leading auth line is verified and its following frame is delivered', async () => {
   const f = await fixture();
   try {
     const path = peers(f.configDir).find(peer => peer.sessionId === f.desktop.threadId)?.messagingSocketPath;
     if (!path) throw new Error('No receiver');
     const socket = net.createConnection(path);
     await once(socket, 'connect');
-    socket.end(JSON.stringify({ type: 'auth', token: '0123456789abcdef0123456789abcdef' }) + '\n'
+    const hash = createHash('sha256').update(path).digest('hex');
+    const { peerToken } = JSON.parse(readFileSync(join(f.configDir, 'sessions', `${process.pid}.${hash}.key`), 'utf8'));
+    socket.end(JSON.stringify({ type: 'auth', token: peerToken }) + '\n'
       + JSON.stringify({ msgV: 1, type: 'user', msg_id: randomUUID(), from: `uds:${f.peerPath}`, session_id: f.desktop.threadId,
         message: { role: 'user', content: 'after auth' } }) + '\n');
     await once(socket, 'close');

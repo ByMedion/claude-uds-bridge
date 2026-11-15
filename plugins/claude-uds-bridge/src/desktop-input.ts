@@ -9,7 +9,7 @@ const historySchema = z.object({ entitiesByKey: z.record(z.string(), turnSchema)
   newerBoundary: z.object({ status: z.string() }),
 })) });
 
-type Input = { id: string; clientId: string | null };
+type Input = { id: string; clientId: string | null; user: boolean };
 export type Inputs = { latest: Input | null | undefined; consumed: Input[] };
 
 export function desktopInputs(state: { turns?: unknown; turnHistory?: unknown }): Inputs {
@@ -34,9 +34,9 @@ export function desktopInputs(state: { turns?: unknown; turnHistory?: unknown })
   } else if (kind.data.kind !== 'legacy') return unknown;
   const consumed = new Map<string, Input>();
   for (const turn of turns) for (const item of turn.items) {
-    if (item.type === 'userMessage') consumed.set(item.id, { id: item.id, clientId: item.clientId ?? null });
+    if (item.type === 'userMessage') consumed.set(item.id, { id: item.id, clientId: item.clientId ?? null, user: true });
     if (item.type === 'steeringUserMessage' && item.serverUserMessageId) {
-      consumed.set(item.serverUserMessageId, { id: item.serverUserMessageId, clientId: item.clientUserMessageId ?? null });
+      consumed.set(item.serverUserMessageId, { id: item.serverUserMessageId, clientId: item.clientUserMessageId ?? null, user: true });
     }
   }
   for (const turn of turns.toReversed()) {

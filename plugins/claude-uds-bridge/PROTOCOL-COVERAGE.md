@@ -20,7 +20,7 @@ The socket carries newline-delimited UTF-8 JSON, at most 1,048,576 characters pe
 | Frame | Fields | Bridge |
 | --- | --- | --- |
 | `auth` line | `token` | The bridge sends it first when a peer key file matches the target process, and ignores it on receive. |
-| `user` | `msgV: 1`, UUID `msg_id`, `from`, `message: {role, content}`; optional `session_id`, `priority`, `uuid`, `file_attachments` | Sends `session_id` and `priority: "next"` for steer or `"later"` for queue. Incoming `later` selects the v13 native queue; a leading `[bridge:queue]` or `[bridge:steer]` text marker overrides it. Drops a frame for another `session_id`. Ignores `uuid`. Refuses nonempty `file_attachments`. |
+| `user` | `msgV: 1`, UUID `msg_id`, `from`, `message: {role, content}`; optional `session_id`, `priority`, `uuid`, `file_attachments`, `local_chain` | Sends `session_id` and `priority: "next"` for steer or `"later"` for queue. Incoming `later` selects the v13 native queue; a leading `[bridge:queue]` or `[bridge:steer]` text marker overrides it. Drops a frame for another `session_id`. Ignores `uuid`. Refuses nonempty `file_attachments`. Retains validated `local_chain`; only authenticated, registry-bound native envelopes qualify for local compaction. |
 | `control` `notify_when_idle` | UUID `msg_id`, optional `from_mode`, optional `session_id` | Requests one idle notice. |
 | `control` `peer_idle_notice` | `orig_msg_id`, `state`; optional `msg_id`, `finished_at`, `detail`, `from_mode`, `session_id` | The bridge delivers it once, if it matches a request. |
 | `control` `peer_message_status` | `orig_msg_id`, `status`; optional `reason`, `status_detail`, `drop_reason`, up to 256 `dropped_msg_ids`, `session_id` | The bridge keeps it in status and stores `reason` as `status_reason`. |
@@ -109,7 +109,8 @@ A socket write and a receipt are both separate from a model reply.
 | Sender burst | yes | 30, refilling 0.5 per second per target. A refusal writes no text and no subscription. A held receipt releases the budget. | protocol, guard |
 | Receiver repeats | yes | The same last text from one sender within 30 seconds is dropped. IDs are deduplicated permanently. | protocol |
 | Receiver rate | yes | Same budget, checked at delivery and at hold release. | protocol |
-| Hop chains | partial | Discard at ten own tokens or more than 28 entries. Outgoing frames append the own token, up to 32. The chain continues from the last confirmed peer input and resets on a confirmed non-peer input. This also caps a long legitimate A/B dialogue. Native 2.1.325 verified-local `local_chain`, envelope compaction, and separate send accounting are not implemented; see [evidence and contract options](HOP-CHAINS.md). | protocol, app-server, desktop, hop-dialogue |
+| Hop chains | partial | Native-shaped authenticated local compaction and a separate full tail; legacy/unverified envelopes retain the ten-own-token/28-entry guard. Full tails and parent inputs are persisted. Token authentication substitutes for native kernel credentials; see [contract and evidence](HOP-CHAINS.md). | local-chain, hop-dialogue, protocol |
+| Automatic dialogue budget | yes | 100 outgoing text sends per chat, shared across peers and MCP processes and persistent across receiver/lifecycle restart. Only a confirmed new human input renews it once. Control-only subscriptions are free; unknown outcomes remain charged. | dialogue-budget, hop-dialogue, protocol |
 | 50 unread accepted | yes | Only a native input ID frees a slot. Overflow drops with `queue-full`. | protocol |
 | Receipt handling | partial | The bridge correlates reason, drop reason, and IDs, and ignores late receipts. Repeated receipts are not summarized. | protocol |
 
@@ -134,7 +135,7 @@ A socket write and a receipt are both separate from a model reply.
 | Private socket directory | yes | Fallback `/tmp/cc-socks-<uid>`. No receiver starts if both fail. The path limit is 103 bytes and has no test. | hook |
 | Wrong owner, symlink, other-user access | yes | The bridge refuses. A start-time check guards against PID reuse. | trust |
 | Silent connection | yes | The bridge closes it after 30 seconds. | none |
-| Auth line | partial | Sent to Claude when a matching key file exists. Ignored on receive, so the sender class comes from the registry and `from-mode`. | protocol |
+| Auth line | partial | Private native-format receiver key; valid first-line auth enables registry-bound local-chain eligibility. Invalid auth closes the connection. Legacy no-auth input retains its existing checks; no kernel credentials are read. Permission class still comes from registry/envelope mode. | local-chain, protocol |
 | Own-child messages, `CLAUDE_CODE_MESSAGING_SOCKET` and `_TOKEN` exports | no | Commands of a Codex task cannot post to their own session as verified children. | none |
 | Socket before all hooks | no | The plugin hook starts the receiver, so earlier hooks get no socket. | none |
 | Receiving refused | yes | The socket stays registered. | protocol |

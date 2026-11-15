@@ -66,14 +66,14 @@ test('consumed peer inputs correlate across history pages and new user input res
   try {
     server.setItems([peer, ...tail]);
     expect(await withAppServer(server.path, server.threadId, client => client.inputs([inputId])))
-      .toEqual({ latest: { id: nativeId, clientId: inputId }, consumed: [{ id: nativeId, clientId: inputId }] });
+      .toEqual({ latest: { id: nativeId, clientId: inputId, user: false }, consumed: [{ id: nativeId, clientId: inputId, user: false }] });
     server.setItems([peer, ...tail, { type: 'userMessage', id: userId }]);
     const inputs = await withAppServer(server.path, server.threadId, client => client.inputs([inputId]));
-    expect(inputs.latest).toEqual({ id: userId, clientId: null });
-    expect(inputs.consumed).toContainEqual({ id: nativeId, clientId: inputId });
+    expect(inputs.latest).toEqual({ id: userId, clientId: null, user: true });
+    expect(inputs.consumed).toContainEqual({ id: nativeId, clientId: inputId, user: false });
     server.setItems([peer, { type: 'functionCallOutput', id: userId, name: 'other_external_input', namespace: null, output: 'update' }]);
     expect((await withAppServer(server.path, server.threadId, client => client.inputs([inputId]))).latest)
-      .toEqual({ id: userId, clientId: null });
+      .toEqual({ id: userId, clientId: null, user: false });
   } finally { await server.close(); }
 });
 
