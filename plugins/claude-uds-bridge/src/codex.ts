@@ -1,9 +1,10 @@
 import { lstatSync, readlinkSync, realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
+import { tmpdir } from 'node:os';
 import { AppServer, AppServerDisconnected, ThreadUnavailable, withAppServer } from './app-server';
 import { privateDirectory } from './claude';
-import { deliverToDesktop, readDesktopInputs, readDesktopRuntime, watchDesktop, type Runtime } from './desktop';
+import { deliverToDesktop, DesktopDisconnected, readDesktopInputs, readDesktopRuntime, watchDesktop, type Runtime } from './desktop';
 
 export const targetSchema = z.object({ kind: z.enum(['app-server', 'desktop']), path: z.string() });
 export type Target = z.infer<typeof targetSchema>;
@@ -24,17 +25,41 @@ export async function discoverTarget(ipcPath: string, threadId: string): Promise
     const missing = error instanceof Error && 'code' in error && ['ENOENT', 'ECONNREFUSED'].includes(String(error.code));
     if (!missing && !(error instanceof ThreadUnavailable)) throw error;
   }
-  return { kind: 'desktop', path: ipcPath };
+  return discoverDesktopTarget(desktopSocketPaths(ipcPath), threadId);
+}
+
+export function desktopSocketPaths(ipcPath: string, temporaryDirectory = tmpdir(), uid = process.getuid?.()) {
+  return [...new Set([ipcPath, ...(uid === undefined ? [] : [join(temporaryDirectory, 'codex-ipc', uid ? `ipc-${uid}.sock` : 'ipc.sock')])])];
+}
+
+export async function discoverDesktopTarget(paths: string[], threadId: string): Promise<Target> {
+  const unavailable: string[] = [];
+  for (const path of paths) {
+    try {
+      await readDesktopRuntime(path, threadId);
+      return { kind: 'desktop', path };
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && ['ENOENT', 'ECONNREFUSED'].includes(String(error.code)))) throw error;
+      unavailable.push(`${path} (${error.code})`);
+    }
+  }
+  throw new Error(`No reachable Desktop IPC socket: ${unavailable.join(', ')}. Check socket ownership and the trusted SessionStart hook. If Desktop reused an incompatible IDE router, quit both apps and start Codex first.`);
 }
 
 export async function watchCodex(target: Target, threadId: string, onState: (state: Runtime) => void, onDisconnect: () => void) {
-  if (target.kind === 'desktop') return watchDesktop(target.path, threadId, onState, onDisconnect);
   let server: AppServer | undefined;
+  let closeDesktop: (() => void) | undefined;
   let stopped = false;
   let ready = false;
   let recovering = false;
-  const close = () => { stopped = true; server?.close(); };
+  const close = () => { stopped = true; server?.close(); closeDesktop?.(); };
   const attach = async () => {
+    if (target.kind === 'desktop') {
+      closeDesktop = await watchDesktop(target.path, threadId, state => { if (!stopped) onState(state); },
+        error => { if (ready) void recover(error); });
+      if (stopped) closeDesktop();
+      return;
+    }
     server = new AppServer(target.path, threadId, error => { if (ready) void recover(error); });
     await server.connect();
     await server.observe(state => { if (!stopped) onState(state); });
@@ -50,7 +75,7 @@ export async function watchCodex(target: Target, threadId: string, onState: (sta
       await Bun.sleep(delay);
       if (stopped) return;
       try { await attach(); recovering = false; return; }
-      catch (failure) { server?.close(); error = failure; delay = Math.min(delay * 2, 2000); }
+      catch (failure) { server?.close(); closeDesktop?.(); error = failure; delay = Math.min(delay * 2, 2000); }
     }
     if (!stopped) { close(); onDisconnect(); }
   };
@@ -59,7 +84,7 @@ export async function watchCodex(target: Target, threadId: string, onState: (sta
 }
 
 function reconnectable(error: unknown) {
-  return error instanceof AppServerDisconnected || (error instanceof Error && 'code' in error
+  return error instanceof AppServerDisconnected || error instanceof DesktopDisconnected || (error instanceof Error && 'code' in error
     && ['ENOENT', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE'].includes(String(error.code)));
 }
 

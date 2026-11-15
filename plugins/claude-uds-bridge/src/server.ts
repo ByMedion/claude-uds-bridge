@@ -82,6 +82,12 @@ server.registerTool('diagnose', { description: 'Read receiver startup errors, MC
   const status = bridge.status();
   return result({ ...status, connection: await diagnoseConnection(bridge.ipcPath, bridge.threadId, status.replyAddress ? bridge.target() : undefined) });
 });
+server.registerTool('recover_receiver', { description: 'Retry this chat receiver using the directory recorded by its active SessionStart lifecycle. Preserves held messages and inbox policy; never trusts hooks or starts another chat. Run diagnose first.',
+  inputSchema: {}, annotations: { readOnlyHint: false, openWorldHint: false } }, async (_args, extra) => {
+  const bridge = current(extra._meta);
+  await startReceiver(bridge.threadId, bridge.recoveryContext().cwd);
+  return result(bridge.status());
+});
 server.registerTool('inbox', { description: 'Open a dialog the user answers. Use view policy to set accept, hold, refuse or default, view expiry to set how long a held message waits, and view held to put the oldest held message in front of the user. Only that answer releases held input, and the held text stays out of your context either way.',
   inputSchema: { view: z.enum(['policy', 'held', 'expiry']) }, annotations: { openWorldHint: false } }, async ({ view }, extra) => {
   const bridge = current(extra._meta);

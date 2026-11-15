@@ -87,7 +87,7 @@ async function runHook() {
       state.recordReceiverStart(event.cwd);
       return;
     }
-    const generation = state.beginSession();
+    const generation = state.resumeSession();
     state.recordReceiverStart(event.cwd);
     try { await launchReceiver(generation); }
     catch (error) {

@@ -116,9 +116,23 @@ export class Bridge {
     return generation;
   }
 
+  resumeSession() {
+    return this.db.query<{ generation: string }, []>('SELECT generation FROM lifecycle WHERE singleton=1 AND active=1').get()?.generation
+      ?? this.beginSession();
+  }
+
   recordReceiverStart(cwd: string, error: string | null = null) {
     this.db.run('INSERT INTO receiver_start VALUES (1,?,?,?) ON CONFLICT(singleton) DO UPDATE SET cwd=excluded.cwd,error=excluded.error,updated_at=excluded.updated_at',
       [cwd, error, Date.now()]);
+  }
+
+  recoveryContext() {
+    if (!this.db.query('SELECT 1 FROM lifecycle WHERE singleton=1 AND active=1').get()) {
+      throw new Error('No active SessionStart lifecycle; review and run the trusted SessionStart hook first');
+    }
+    const context = this.db.query<{ cwd: string }, []>('SELECT cwd FROM receiver_start WHERE singleton=1').get();
+    if (!context) throw new Error('No recorded SessionStart directory; reopen the chat to run its trusted hook');
+    return context;
   }
 
   setTarget(target: Target) {
@@ -186,6 +200,8 @@ export class Bridge {
         if (this.closing) break;
         await this.route(message);
       }
+      await this.recheckHeld();
+      this.scheduleExpiry();
     });
   }
 

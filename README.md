@@ -77,6 +77,12 @@ The app-server transport uses `turn/start` with `toolOutput`, which starts or jo
 
 `status` reports the loaded plugin and receiver versions, selected transport path, and the last receiver startup result. `diagnose` probes this chat's transport without submitting input and distinguishes missing/refused sockets, initialization timeouts, and unsupported stream versions.
 
+## Recover a receiver
+
+Run `recover_receiver` to retry a receiver after its trusted `SessionStart` hook has established an active lifecycle. It uses the recorded directory and preserves held messages, their deadlines, and policy. Review/reopen the trusted hook if no active lifecycle exists.
+
+Desktop observers retry transient disconnects for up to 30 seconds while status and permissions remain unknown. Discovery tries the known per-user legacy socket after a missing/refused primary endpoint, retaining all ownership and protocol checks. An incompatible IDE router still needs its router conflict fixed, sometimes by quitting both apps and starting Codex first.
+
 ## Control what arrives
 
 The receive setting belongs to one task. When the permission modes of sender and receiver differ, a native dialog opens, also between turns. Held text reaches the model only after you release it.
@@ -100,6 +106,7 @@ The sender sees Claude's status notices, among them `held`, `delivered`, `denied
 | `send_message` | Send text to one agent. Set `notify_when_idle` for one notice when that agent next goes idle. |
 | `status` | Show receiver versions and recent transport outcomes. |
 | `diagnose` | Show startup errors and transport reachability without submitting input. |
+| `recover_receiver` | Retry this chat receiver within its active recorded lifecycle. |
 | `inbox` | Open a dialog where you set the receive policy and hold expiry, or review the oldest held message. |
 
 ## Limits

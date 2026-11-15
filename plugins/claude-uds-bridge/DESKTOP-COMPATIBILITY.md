@@ -19,3 +19,8 @@ The adapter accepts stream versions 11 and 13 and retains the existing owner, co
 
 The public [openai/codex source](https://github.com/openai/codex/tree/b7056f3408522716b6643c8b3e23ce7c9b53b041) was searched at that SHA. Its IDE-context IPC client mentions the stream in a test, but the Desktop stream implementation and 11-to-13 schema history were not present. The checked public changelog and latest 40 GitHub releases did not explain the version bump. The exact upstream schema delta remains unknown.
 
+## Recovery boundaries
+
+Discovery probes only the primary Desktop endpoint and the known per-user legacy endpoint. It tries the legacy endpoint only after a missing/refused primary socket. Incompatible protocols and unsafe ownership fail closed. This can recover a compatible alternate router, but cannot repair an incompatible IDE/Desktop router or a missing Desktop owner.
+
+`recover_receiver` reuses an active lifecycle recorded by `SessionStart`; it never grants hook trust, changes inbox policy, resumes another chat, or replays an uncertain delivery. Held-message deadlines remain in force. A transient Desktop disconnect suspends permission-based acceptance until a fresh snapshot arrives.

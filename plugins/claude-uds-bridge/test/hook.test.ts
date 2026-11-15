@@ -15,6 +15,7 @@ test('session hooks own one receiver per task, restore it after resume and clean
   mkdirSync(join(root, 'cc-socks'), { mode: 0o755 });
   const clients = new Set<net.Socket>();
   let pauseHandshake = false;
+  let streamVersion = 11;
   let releaseHandshake: (() => void) | undefined;
   const handshakeSeen = Promise.withResolvers<void>();
   const desktop = net.createServer(socket => {
@@ -31,7 +32,7 @@ test('session hooks own one receiver per task, restore it after resume and clean
       buffer = buffer.subarray(length + 4);
       if (request.method === 'thread-stream-following-changed' && !request.params.following) continue;
       const body = Buffer.from(JSON.stringify(request.method === 'thread-stream-following-changed'
-        ? { type: 'broadcast', sourceClientId: 'owner', method: 'thread-stream-state-changed', version: 11,
+        ? { type: 'broadcast', sourceClientId: 'owner', method: 'thread-stream-state-changed', version: streamVersion,
           params: { conversationId: request.params.conversationId, change: { type: 'snapshot',
             conversationState: { cwd: root, threadRuntimeStatus: { type: 'idle' }, currentPermissions: { approvalPolicy: 'on-request' } } } } }
         : { type: 'response', requestId: request.requestId, handledByClientId: 'owner', resultType: 'success',
@@ -96,18 +97,21 @@ test('session hooks own one receiver per task, restore it after resume and clean
     const resumed = live(threadId)[0];
     expect(resumed?.sessionId).toBe(threadId);
     expect(resumed?.pid).not.toBe(crashed.pid);
+    streamVersion = 14;
     for (const socket of clients) socket.destroy();
     const deadline = Date.now() + 3000;
     while (peers(configDir).length > 0 && Date.now() < deadline) await Bun.sleep(10);
     expect(peers(configDir)).toHaveLength(0);
     expect(existsSync(resumed!.messagingSocketPath)).toBe(false);
 
+    streamVersion = 11;
     pauseHandshake = true;
     const racingId = randomUUID();
     const opening = hook(racingId, 'SessionStart', 1);
     await handshakeSeen.promise;
     await hook(racingId, 'SessionEnd');
     if (!releaseHandshake) throw new Error('Missing startup barrier');
+    pauseHandshake = false;
     releaseHandshake();
     await opening;
     expect(live(racingId)).toHaveLength(0);

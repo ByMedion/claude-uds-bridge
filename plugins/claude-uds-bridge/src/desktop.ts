@@ -22,6 +22,7 @@ const snapshotSchema = z.object({ cwd: z.string().min(1), threadRuntimeStatus: z
     sandboxPolicy: z.object({ type: z.string() }).optional() }).optional() });
 type Snapshot = z.infer<typeof snapshotSchema>;
 export type Runtime = { status: 'idle' | 'busy' | 'unknown'; mode: 'prompting' | 'bypass' | 'unknown' };
+export class DesktopDisconnected extends Error {}
 const acceptedSchema = z.object({ result: z.union([
   z.object({ turn: z.object({ id: uuid }) }), z.object({ turnId: uuid }),
 ]) });
@@ -51,19 +52,22 @@ class DesktopConnection {
   private observed?: Runtime;
   private refreshing = false;
   private dirty = false;
+  private disconnectError?: Error;
 
-  constructor(readonly path: string, readonly threadId: string, onDisconnect?: () => void) {
+  constructor(readonly path: string, readonly threadId: string, onDisconnect?: (error: Error) => void) {
     checkSocket(path);
     this.socket = net.createConnection(path);
     this.socket.on('data', chunk => this.read(typeof chunk === 'string' ? Buffer.from(chunk) : chunk));
     this.socket.on('error', error => this.fail(error));
     this.socket.on('close', () => {
-      this.fail(new Error('Desktop IPC disconnected; delivery may be unknown'));
-      onDisconnect?.();
+      const error = this.disconnectError ?? new DesktopDisconnected('Desktop IPC disconnected; delivery may be unknown');
+      this.fail(error);
+      onDisconnect?.(error);
     });
   }
 
   private fail(error: Error) {
+    this.disconnectError ??= error;
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
     this.snapshotResult?.reject(error);
@@ -262,7 +266,7 @@ class DesktopConnection {
   }
 }
 
-export async function watchDesktop(path: string, threadId: string, onState: (state: Runtime) => void, onDisconnect: () => void) {
+export async function watchDesktop(path: string, threadId: string, onState: (state: Runtime) => void, onDisconnect: (error: Error) => void) {
   const connection = new DesktopConnection(path, threadId, onDisconnect);
   try { await connection.connect(); await connection.observe(onState); return () => connection.close(); }
   catch (error) { connection.close(); throw error; }

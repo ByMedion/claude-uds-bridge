@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
-const requestSchema = z.object({ type: z.string(), requestId: z.string().optional(), method: z.string(), params: z.unknown() });
+const requestSchema = z.object({ type: z.string(), requestId: z.string().optional(), method: z.string(), params: z.unknown(), version: z.number().optional() });
 
 export async function receiver(state: 'active' | 'idle', dropAcknowledgement = false, endBeforeSteer = false, root = mkdtempSync('/tmp/desktop-test-'), streamVersion = 11) {
   mkdirSync(join(root, 'ipc'), { mode: 0o700 });
@@ -13,6 +13,7 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
   const threadId = randomUUID();
   const turnId = randomUUID();
   const submissions: { method: string; params: unknown }[] = [];
+  const requests: z.infer<typeof requestSchema>[] = [];
   let permissions: unknown = { approvalPolicy: 'on-request', sandboxPolicy: { type: 'workspaceWrite' } };
   let history: Record<string, unknown> = { turns: [], turnHistory: { kind: 'legacy' } };
   const clients = new Set<net.Socket>();
@@ -39,6 +40,7 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
       while (buffer.length >= 4 && buffer.length >= 4 + buffer.readUInt32LE()) {
         const size = buffer.readUInt32LE();
         const request = requestSchema.parse(JSON.parse(buffer.subarray(4, 4 + size).toString('utf8')));
+        requests.push(request);
         buffer = buffer.subarray(4 + size);
         const reply = (result: unknown) => write({ type: 'response', requestId: request.requestId,
           handledByClientId: 'owner', resultType: 'success', result });
@@ -66,7 +68,8 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
   server.listen(path);
   await once(server, 'listening');
   chmodSync(path, 0o600);
-  return { path, threadId, turnId, submissions,
+  return { path, threadId, turnId, submissions, requests,
+    disconnectClients() { for (const socket of clients) socket.destroy(); },
     setHistory(value: Record<string, unknown>) { history = { turns: [], turnHistory: { kind: 'legacy' }, ...value }; },
     setPermissions(value: unknown) { permissions = value; for (const send of announce) send(); },
     setState(value: 'idle' | 'active') { state = value; for (const send of announce) send(); }, close: async () => {
