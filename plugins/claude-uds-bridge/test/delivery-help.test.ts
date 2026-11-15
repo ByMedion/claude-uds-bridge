@@ -77,7 +77,7 @@ test('first ordinary Claude message carries one guide without changing its ident
 
 test('guide revisions persist across connections, repeat on an instruction change, and never downgrade', async () => {
   const f = await fixture();
-  const guide2 = { revision: 2, text: 'Updated delivery instructions' };
+  const guide2 = { revision: deliveryHelp.revision + 1, text: 'Updated delivery instructions' };
   try {
     await f.send('first');
     await f.send('after reconnect');

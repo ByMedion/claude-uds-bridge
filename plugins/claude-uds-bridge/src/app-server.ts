@@ -108,6 +108,23 @@ export class AppServer {
 
   async hooks() { return this.request('hooks/list', { threadId: this.threadId }); }
 
+  async compactionState() {
+    const context = await this.context();
+    const page = z.object({ data: z.array(z.object({ item: z.object({ id: z.string(), type: z.string() }), completedAtMs: z.number().nullable().optional() })) })
+      .parse(await this.request('thread/items/list', { threadId: this.threadId, limit: 100, sortDirection: 'desc' }));
+    const items = page.data.filter(row => row.item.type === 'contextCompaction');
+    return { cwd: context.cwd, runtime: context.runtime,
+      completed: items.filter(row => row.completedAtMs != null).map(row => row.item.id),
+      running: items.filter(row => row.completedAtMs == null).map(row => row.item.id) };
+  }
+
+  async compact(expectedMode?: Runtime['mode']) {
+    const before = await this.compactionState();
+    if (before.runtime.status !== 'idle' || before.runtime.mode === 'unknown' || expectedMode && before.runtime.mode !== expectedMode || before.running.length) return false;
+    await this.request('thread/compact/start', { threadId: this.threadId });
+    return true;
+  }
+
   async context() {
     const { thread } = z.object({ thread: threadSchema }).parse(await this.request('thread/read', { threadId: this.threadId }));
     if (thread.id !== this.threadId || thread.status.type === 'notLoaded' || thread.canAcceptDirectInput === false || !thread.cwd) {

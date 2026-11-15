@@ -12,6 +12,8 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
   const path = join(root, 'ipc', 'ipc.sock');
   const threadId = randomUUID();
   const turnId = randomUUID();
+  const compactions: string[] = [];
+  let compactFailure: boolean = false;
   const submissions: { method: string; params: unknown }[] = [];
   const requests: z.infer<typeof requestSchema>[] = [];
   const queuedMessages = new Map<string, Record<string, unknown>>();
@@ -53,6 +55,17 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
           write({ type: 'broadcast', sourceClientId: 'owner', method: 'thread-stream-state-changed', version: streamVersion,
             params: { conversationId: threadId, change: { type: 'snapshot',
               conversationState: { cwd: root, threadRuntimeStatus: { type: state }, currentPermissions: permissions, ...history } } } });
+        } else if (request.method === 'thread-follower-compact-thread') {
+          if (request.version !== 1) throw new Error('Wrong compact method version');
+          const { conversationId } = z.object({ conversationId: z.string() }).parse(request.params);
+          if (conversationId !== threadId) throw new Error('Wrong compact thread');
+          const id = randomUUID();
+          compactions.push(id);
+          const turns = (history.turns ?? []) as { items: unknown[] }[];
+          history.turns = [...turns, { turnId: randomUUID(), status: 'inProgress', items: [{ type: 'contextCompaction', id, completed: false, source: 'manual' }] }];
+          state = 'active';
+          if (compactFailure) socket.destroy();
+          else reply({ ok: true });
         } else if (request.method === 'thread-follower-set-queued-follow-ups-state') {
           const params = z.object({ conversationId: z.string(), preparationMessageId: z.string(),
             state: z.record(z.string(), z.array(z.object({ id: z.string(), preparation: z.unknown().optional() }).passthrough())),
@@ -92,7 +105,18 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
   server.listen(path);
   await once(server, 'listening');
   chmodSync(path, 0o600);
-  return { path, threadId, turnId, submissions, requests, queuedMessages,
+  return { path, threadId, turnId, submissions, requests, queuedMessages, compactions,
+    loseCompactAcknowledgement() { compactFailure = true; },
+    completeCompaction() {
+      for (const turn of (history.turns ?? []) as { status?: string; items: { type: string; completed?: boolean }[] }[]) {
+        if (turn.items.some(item => item.type === 'contextCompaction')) {
+          turn.status = 'completed';
+          for (const item of turn.items) if (item.type === 'contextCompaction') item.completed = true;
+        }
+      }
+      state = 'idle';
+      for (const send of announce) send();
+    },
     failQueue(value: 'finalize' | 'ack') { queueFailure = value; },
     disconnectClients() { for (const socket of clients) socket.destroy(); },
     setHistory(value: Record<string, unknown>) { history = { turns: [], turnHistory: { kind: 'legacy' }, ...value }; },

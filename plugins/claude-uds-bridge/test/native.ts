@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { peers, uuid } from '../src/claude';
+import { compactCodex, readCompactions, appServerSocket } from '../src/codex';
 
 const root = mkdtempSync('/tmp/codex-native-');
 const interactive = process.argv.includes('--interactive');
@@ -190,7 +191,7 @@ try {
   const status = async () => {
     const result = await mcp.callTool({ name: 'status', arguments: {}, _meta: { threadId } });
     const content = z.array(z.object({ type: z.literal('text'), text: z.string() })).parse(result.content);
-    return z.object({ transport: z.literal('app-server'), unreadCount: z.number(),
+    return z.object({ transport: z.literal('app-server'), unreadCount: z.number(), automaticMessageBudget: z.object({ used: z.number() }),
       messages: z.array(z.object({ id: z.string(), direction: z.string(), status: z.string() })),
       idleRequests: z.array(z.object({ id: z.string(), status: z.string() })) })
       .parse(JSON.parse(content[0]?.text ?? ''));
@@ -239,9 +240,19 @@ try {
     assert.notEqual(notice.isError, true, JSON.stringify(notice));
     await until(async () => (await status()).idleRequests.some(request => request.status === 'received'));
   } else assert(receipts.some(receipt => JSON.stringify(receipt).includes('native peer reply')));
+  if (!livePeerId) {
+    const target = { kind: 'app-server' as const, path: appServerSocket(root) };
+    const baseline = new Set((await readCompactions(target, threadId!)).completed);
+    assert.equal(await compactCodex(target, threadId!), true);
+    await until(async () => (await readCompactions(target, threadId!)).completed.some(id => !baseline.has(id)));
+    await until(idle);
+    const afterCompact = await status();
+    assert.equal(afterCompact.automaticMessageBudget.used, state.automaticMessageBudget.used + 1,
+      'The preceding outbound reply consumes one send; compact must not renew the allowance');
+  }
   await hookEnd();
   assert(!peers(configDir).some(peer => peer.sessionId === threadId));
-  console.log(`Stock Codex passed${peerFirst ? ' after direct backend peer initiation without user input' : ''}${livePeerId ? ' with real Claude, including idle notification' : ''}: SessionStart registration, idle and active delivery at tool authority, consumption, peer reply, shutdown.`);
+  console.log(`Stock Codex passed${peerFirst ? ' after direct backend peer initiation without user input' : ''}${livePeerId ? ' with real Claude, including idle notification' : ''}: SessionStart registration, idle and active delivery at tool authority, consumption, peer reply${livePeerId ? '' : ', native compaction'}, shutdown.`);
 } finally {
   release.resolve();
   await mcp.close();

@@ -149,7 +149,7 @@ export async function register(configDir: string, sessionId: string, address: st
     ...(process.platform === 'darwin' ? { pidDomain: 'darwin' } : {}),
     kind: 'interactive', entrypoint: 'codex-claude-uds-bridge', messagingSocketPath: socketPath(address),
     status, statusUpdatedAt: Date.now(), bridgeVersion: version,
-    peerFeatures: ['notify_idle', 'local_chain', ...(queueDelivery ? ['delivery_queue'] : [])] };
+    peerFeatures: ['notify_idle', 'local_chain', 'compact_request', ...(queueDelivery ? ['delivery_queue'] : [])] };
   writeFileSync(path, JSON.stringify(record), { flag: 'wx', mode: 0o600 });
   const check = () => {
     const current = z.object({ sessionId: uuid, procStart: z.string() }).parse(ownedJson(path, 256 * 1024));

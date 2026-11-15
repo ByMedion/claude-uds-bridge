@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { tmpdir } from 'node:os';
 import { AppServer, AppServerDisconnected, ThreadUnavailable, withAppServer } from './app-server';
 import { privateDirectory } from './claude';
-import { deliverToDesktop, DesktopDisconnected, DeliveryUnsupported, readDesktopInputs, readDesktopRuntime, readDesktopContext, watchDesktop, type DeliveryMode, type Runtime } from './desktop';
+import { deliverToDesktop, DesktopDisconnected, DeliveryUnsupported, readDesktopInputs, readDesktopRuntime, readDesktopContext, readDesktopCompactions, compactDesktop, watchDesktop, type DeliveryMode, type Runtime } from './desktop';
 
 export const targetSchema = z.object({ kind: z.enum(['app-server', 'desktop']), path: z.string() });
 export type Target = z.infer<typeof targetSchema>;
@@ -108,4 +108,13 @@ export type CodexContext = { cwd: string; owner: string; runtime: Runtime; hasEx
 export function readCodexContext(target: Target, threadId: string): Promise<CodexContext> {
   return target.kind === 'desktop' ? readDesktopContext(target.path, threadId)
     : withAppServer(target.path, threadId, server => server.context());
+}
+
+export function readCompactions(target: Target, threadId: string) {
+  return target.kind === 'desktop' ? readDesktopCompactions(target.path, threadId)
+    : withAppServer(target.path, threadId, server => server.compactionState());
+}
+export function compactCodex(target: Target, threadId: string, expectedMode?: Runtime['mode']) {
+  return target.kind === 'desktop' ? compactDesktop(target.path, threadId, expectedMode)
+    : withAppServer(target.path, threadId, server => server.compact(expectedMode));
 }

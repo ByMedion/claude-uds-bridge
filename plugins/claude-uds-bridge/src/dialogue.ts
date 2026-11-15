@@ -27,8 +27,11 @@ export class DialogueBudget {
   reserve(id: string) {
     return this.db.transaction(() => {
       const state = this.state();
+      const old = this.db.query<{ charged: number; human_input_id: string | null }, [string]>(
+        'SELECT charged,human_input_id FROM dialogue_sends WHERE id=?').get(id);
+      if (old?.charged && old.human_input_id === state.human_input_id) return true;
       if (state.used >= automaticMessageLimit) return false;
-      this.db.run('INSERT INTO dialogue_sends VALUES (?,?,1)', [id, state.human_input_id]);
+      this.db.run('INSERT INTO dialogue_sends VALUES (?,?,1) ON CONFLICT(id) DO UPDATE SET human_input_id=excluded.human_input_id,charged=1', [id, state.human_input_id]);
       this.db.run('UPDATE dialogue_budget SET used=used+1 WHERE singleton=1');
       return true;
     }).immediate();

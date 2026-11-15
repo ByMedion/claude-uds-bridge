@@ -79,6 +79,7 @@ A socket write and a receipt are both separate from a model reply.
 | Lost confirmation | yes | `unknown`, no retry. `accepted` does not prove a reply. | desktop |
 | Delivery selection | partial | `now`/`next` steer; `later` or `[bridge:queue]` uses Desktop v13's native queue. Unsupported queue delivery is refused. App-server tool-output delivery has no queue adapter. | protocol, queue |
 | `session_id` on any frame | yes | A frame for another session is dropped, text or control. Claude's own control frames carry no `session_id`. | protocol |
+| Context compaction | partial | Exact `[bridge:compact]` operation, authenticated sender and human per-chat grant; idle wait, explicit completion evidence, bounded notification and no retry after unknown. Native endpoints lack an atomic idle-only precondition. See [limits](COMPACTION.md). | compact, compact-access-mcp, native |
 | Session ID change after `/clear` | yes | Per PeterSR and Claude's `regenerateSessionId`, a Claude process keeps its PID and start time and gets a new `sessionId`. Stored sends, idle requests, and receipts resolve by socket address and start time. Not reproduced against a live Claude. | protocol |
 
 ### Inbox and deadlines
@@ -99,6 +100,7 @@ A socket write and a receipt are both separate from a model reply.
 | Deadline pause without a window | no | Codex gives no trusted attachment signal. | none |
 | More than 100 held | yes | The bridge drops the oldest with `queue-full`. | protocol |
 | Session end | yes | The bridge acknowledges held messages as expired. A hard kill cannot guarantee it. | protocol |
+| Receiver recovery | partial | Native owner/cwd/runtime and trusted enabled hooks; inactive lifecycle can resume without clearing held state or the send budget. Desktop trust reader covers cwd configuration; detected thread-specific environments require a host reader. | recovery-state, recovery-mcp |
 | Startup readiness | partial | `required: true` makes Codex wait for MCP before `SessionStart`. If MCP cannot start, the task fails to start. | native |
 
 ### Limits and loops

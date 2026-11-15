@@ -87,6 +87,10 @@ The record confirms a successful send, not that Claude read or retained the guid
 
 Queue delivery requires Desktop stream v13. App-server delivery retains tool-output authority and rejects queue requests because its native queue accepts user input only. Outbound MCP queue requests require the peer to advertise `delivery_queue`; ordinary Claude peers and older bridges do not advertise it. `queued` confirms admission, not that a turn ran or a reply arrived. Held queue messages still require the normal release decision.
 
+## Request context compaction from Claude
+
+In each Codex chat, use `compact_access` and approve a selected Claude session in the user dialog. Access is off by default and belongs only to that chat. Claude can then send exactly `[bridge:compact]` with native SendMessage. The bridge waits for a quiet idle boundary and reports `compact_result` separately; Claude should await completed before scheduling another task. Compact does not renew the 100-send budget, and one outgoing result notice counts toward it. See [compaction and native API limits](plugins/claude-uds-bridge/COMPACTION.md).
+
 ## Diagnose and recover a receiver
 
 `status` reports `pluginVersion`, `receiverVersion`, `transportPath`, and the last receiver startup result. `diagnose` also probes this chat's transport without submitting input. It distinguishes missing/refused sockets, initialization timeouts, and unsupported stream versions.
@@ -119,6 +123,7 @@ The sender sees Claude's status notices, among them `held`, `delivered`, `denied
 | `status` | Show the receiver and recent transport outcomes. |
 | `diagnose` | Show versions, startup errors, and transport reachability without submitting input. |
 | `recover_receiver` | Restore this current chat receiver after native context and hook-trust checks. |
+| `compact_access` | Ask the human to allow or revoke one Claude session compact access in this chat. |
 | `inbox` | Open a dialog where you set the receive policy and hold expiry, or review the oldest held message. |
 
 ## Limits

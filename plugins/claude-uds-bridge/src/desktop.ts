@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { isAbsolute } from 'node:path';
 import { checkSocket, uuid } from './claude';
 import { desktopInputs } from './desktop-input';
+import { desktopCompactions } from './compact';
 
 const packetSchema = z.object({
   type: z.string(), requestId: z.string().optional(), sourceClientId: z.string().optional(),
@@ -140,6 +141,23 @@ class DesktopConnection {
     return { status: state.threadRuntimeStatus.type === 'idle' ? 'idle'
       : state.threadRuntimeStatus.type === 'active' ? 'busy' : 'unknown',
       mode: permissionMode(state.currentPermissions) };
+  }
+
+  async compactionState() {
+    const state = await this.snapshot();
+    const runtime: Runtime = { status: state.threadRuntimeStatus.type === 'idle' ? 'idle' : state.threadRuntimeStatus.type === 'active' ? 'busy' : 'unknown', mode: permissionMode(state.currentPermissions) };
+    return desktopCompactions(state, runtime, state.cwd);
+  }
+
+  async compact(expectedMode?: Runtime['mode']) {
+    // Recheck on this same owner connection immediately before dispatch. The native
+    // method has no expected-turn/idle precondition, so callers must coordinate the
+    // task boundary; a human starting a new turn can still race the native endpoint.
+    const state = await this.compactionState();
+    if (state.runtime.status !== 'idle' || state.runtime.mode === 'unknown' || expectedMode && state.runtime.mode !== expectedMode || state.running.length) return false;
+    const response = await this.request('thread-follower-compact-thread', { conversationId: this.threadId }, 1);
+    z.object({ ok: z.literal(true) }).parse(response.result);
+    return true;
   }
 
   async context() {
@@ -353,5 +371,16 @@ export async function readDesktopInputs(path: string, threadId: string) {
 export async function readDesktopContext(path: string, threadId: string) {
   const connection = new DesktopConnection(path, threadId);
   try { await connection.connect(); return await connection.context(); }
+  finally { connection.close(); }
+}
+
+export async function readDesktopCompactions(path: string, threadId: string) {
+  const connection = new DesktopConnection(path, threadId);
+  try { await connection.connect(); return await connection.compactionState(); }
+  finally { connection.close(); }
+}
+export async function compactDesktop(path: string, threadId: string, expectedMode?: Runtime['mode']) {
+  const connection = new DesktopConnection(path, threadId);
+  try { await connection.connect(); return await connection.compact(expectedMode); }
   finally { connection.close(); }
 }
