@@ -109,7 +109,7 @@ A socket write and a receipt are both separate from a model reply.
 | Sender burst | yes | 30, refilling 0.5 per second per target. A refusal writes no text and no subscription. A held receipt releases the budget. | protocol, guard |
 | Receiver repeats | yes | The same last text from one sender within 30 seconds is dropped. IDs are deduplicated permanently. | protocol |
 | Receiver rate | yes | Same budget, checked at delivery and at hold release. | protocol |
-| Hop chains | yes | Discard at ten own tokens or more than 28 entries. Outgoing frames append the own token, up to 32. The chain continues from the last confirmed peer input and resets on user input. | protocol, app-server, desktop |
+| Hop chains | yes | Discard at ten own tokens or more than 28 entries. Outgoing frames append the own token, up to 32. The chain continues from the last confirmed peer input and resets on a confirmed non-peer input. This also caps a long legitimate A/B dialogue; see [contract options](HOP-CHAINS.md). | protocol, app-server, desktop, hop-dialogue |
 | 50 unread accepted | yes | Only a native input ID frees a slot. Overflow drops with `queue-full`. | protocol |
 | Receipt handling | partial | The bridge correlates reason, drop reason, and IDs, and ignores late receipts. Repeated receipts are not summarized. | protocol |
 
