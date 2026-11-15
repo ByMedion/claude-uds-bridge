@@ -12,6 +12,7 @@ import { CancelledNotificationSchema, ElicitRequestSchema } from '@modelcontextp
 import { Bridge } from '../src/bridge';
 import { findPeer, frameSchema, hopChain, maxLineLength, peers, sendFrames, sessionName, userFrame } from '../src/claude';
 import { receiver } from './desktop-fixture';
+import { deliveryHelp } from '../src/delivery-help';
 
 async function fixture(prefix = '/tmp/uds-protocol-', streamVersion = 11) {
   const root = mkdtempSync(prefix);
@@ -104,6 +105,30 @@ test('the outgoing envelope carries the native sender thread ID for session attr
     const frame = f.frames.find(frame => frame.type === 'user');
     expect(frame?.type === 'user' && frame.message.content).toContain(`from-session="${f.desktop.threadId}"`);
   } finally { await f.close(); }
+});
+
+test('MCP attaches one Claude delivery guide through the receiver and remembers it after MCP reconnect', async () => {
+  const f = await fixture();
+  const clients: Client[] = [];
+  try {
+    for (const text of ['first ordinary request', 'request after MCP reconnect']) {
+      const client = new Client({ name: 'guide-integration', version: '1' });
+      clients.push(client);
+      await client.connect(new StdioClientTransport({ command: process.execPath,
+        args: [process.env.UDS_MCP_TEST_ENTRYPOINT ?? join(import.meta.dir, '../src/server.ts')],
+        env: { ...process.env, CODEX_HOME: f.root, CLAUDE_CONFIG_DIR: f.configDir } }));
+      const result = await client.callTool({ name: 'send_message', arguments: { sessionId: f.peerId, text },
+        _meta: { threadId: f.desktop.threadId } });
+      expect(result.isError).not.toBe(true);
+      await client.close();
+    }
+    const users = f.frames.filter(frame => frame.type === 'user');
+    expect(users).toHaveLength(2);
+    expect(users[0]?.message.content).toContain(deliveryHelp.text);
+    expect(users[1]?.message.content).not.toContain(deliveryHelp.text);
+    expect(f.db.query<{ text: string }, []>("SELECT text FROM messages WHERE direction='out' ORDER BY created_at,rowid").all().map(row => row.text))
+      .toEqual(['first ordinary request', 'request after MCP reconnect']);
+  } finally { for (const client of clients) await client.close(); await f.close(); }
 });
 
 test('native receipt reasons remain visible in status while late receipts stay ignored', async () => {

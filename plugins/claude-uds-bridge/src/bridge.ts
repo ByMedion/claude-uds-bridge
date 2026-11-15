@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { outboundServer, refreshReceiver, sendViaReceiver } from './outbound';
 import { PeerGuard } from './guard';
 import { version } from './version';
+import { withDeliveryHelp } from './delivery-help';
 
 type Message = { id: string; peer_id: string; direction: string; text: string; status: string; turn_id: string | null;
   peer_address: string | null; peer_start: string | null; from_mode: string | null; expires_at: number | null; kind: string;
@@ -30,7 +31,7 @@ export class Bridge {
   private serial: Promise<unknown> = Promise.resolve();
   private expiryTimer?: ReturnType<typeof setTimeout>;
   private incomingMessages = 0;
-  constructor(readonly threadId: string, readonly configDir: string, stateDir: string, readonly ipcPath: string) {
+  constructor(readonly threadId: string, readonly configDir: string, readonly stateDir: string, readonly ipcPath: string) {
     uuid.parse(threadId);
     mkdirSync(stateDir, { recursive: true, mode: 0o700 });
     privateDirectory(stateDir);
@@ -425,9 +426,11 @@ export class Bridge {
   }
 
   private async writePeer(peer: Peer, frames: unknown[], canWrite?: () => boolean) {
-    if (this.ownsReceiver) return sendFrames(this.configDir, peer, frames, { canWrite });
-    const receiver = this.receiver();
-    return sendViaReceiver(receiver.messagingSocketPath.replace(/\.sock$/, '.out'), peer, frames);
+    return withDeliveryHelp(this.stateDir, this.configDir, peer, frames, async outgoing => {
+      if (this.ownsReceiver) return sendFrames(this.configDir, peer, outgoing, { canWrite });
+      const receiver = this.receiver();
+      return sendViaReceiver(receiver.messagingSocketPath.replace(/\.sock$/, '.out'), peer, outgoing);
+    });
   }
 
   private scheduleExpiry() {
