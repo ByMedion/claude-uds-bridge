@@ -18,7 +18,14 @@ codex plugin marketplace add LeonKohli/claude-uds-bridge
 codex plugin add claude-uds-bridge@leonkohli
 ```
 
-To install from a local checkout, pass its path to `marketplace add` instead.
+To install the ByMedion fork from a local checkout:
+
+```bash
+codex plugin marketplace add /absolute/path/to/claude-uds-bridge
+codex plugin add claude-uds-bridge@leonkohli
+```
+
+The fork keeps the upstream marketplace name `leonkohli`, so the plugin retains its existing identity when its source changes to the local checkout. If `leonkohli` is already configured from another source, run `codex plugin marketplace remove leonkohli` before adding the local checkout. Restart Codex when an already loaded component has not refreshed after an update.
 
 The plugin is not in the public Plugin Directory. As of 2026-10-03, OpenAI's [submission rules](https://developers.openai.com/plugins/deploy/submission) reject plugins with lifecycle hooks and accept only hosted HTTPS MCP servers. This plugin needs a `SessionStart` hook and a local MCP server, because the sockets and registry it uses live on your machine. It installs through its own marketplace until those rules change.
 

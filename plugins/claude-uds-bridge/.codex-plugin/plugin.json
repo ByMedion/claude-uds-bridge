@@ -6,8 +6,8 @@
     "name": "Leon Kohli"
   },
   "license": "MIT",
-  "homepage": "https://github.com/LeonKohli/claude-uds-bridge",
-  "repository": "https://github.com/LeonKohli/claude-uds-bridge",
+  "homepage": "https://github.com/ByMedion/claude-uds-bridge",
+  "repository": "https://github.com/ByMedion/claude-uds-bridge",
   "keywords": ["claude-code", "codex", "messaging", "multi-agent", "mcp"],
   "interface": {
     "displayName": "Claude UDS Bridge",
