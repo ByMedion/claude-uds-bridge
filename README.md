@@ -91,7 +91,7 @@ Queue delivery requires Desktop stream v13. App-server delivery retains tool-out
 
 `status` reports `pluginVersion`, `receiverVersion`, `transportPath`, and the last receiver startup result. `diagnose` also probes this chat's transport without submitting input. It distinguishes missing/refused sockets, initialization timeouts, and unsupported stream versions.
 
-Run `recover_receiver` to retry a receiver after its trusted `SessionStart` hook has established an active lifecycle. It uses that lifecycle's recorded directory and preserves held messages and policy. It refuses recovery before a lifecycle exists or after `SessionEnd`; review/reopen the trusted hook in that case.
+Run `recover_receiver` to restore this current chat even when its recorded lifecycle is inactive. It verifies a live Codex owner, directory and permissions, and checks the enabled trusted hook through the official read-only `hooks/list` API. It preserves held messages/deadlines, policy and the spent send budget; it never edits hook trust or loads an unidentified chat. See [receiver recovery](plugins/claude-uds-bridge/RECEIVER-RECOVERY.md) for the trust scope and failure cases.
 
 Desktop observers now retry transient disconnects for up to 30 seconds, keeping status and permissions unknown until a fresh snapshot arrives. Discovery can try the known per-user legacy socket after a missing/refused primary endpoint, with the same ownership, private-directory, thread-owner, and stream checks. An incompatible IDE router still requires fixing the router conflict, sometimes by quitting both apps and starting Codex first.
 
@@ -118,7 +118,7 @@ The sender sees Claude's status notices, among them `held`, `delivered`, `denied
 | `send_message` | Send text with `delivery: "steer"` or `"queue"`. Set `notify_when_idle` for one idle notice. |
 | `status` | Show the receiver and recent transport outcomes. |
 | `diagnose` | Show versions, startup errors, and transport reachability without submitting input. |
-| `recover_receiver` | Retry this chat's receiver within its active recorded lifecycle. |
+| `recover_receiver` | Restore this current chat receiver after native context and hook-trust checks. |
 | `inbox` | Open a dialog where you set the receive policy and hold expiry, or review the oldest held message. |
 
 ## Limits

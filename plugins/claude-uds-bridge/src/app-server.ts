@@ -8,7 +8,7 @@ import type { Inputs } from './desktop-input';
 import { version } from './version';
 
 const statusSchema = z.object({ type: z.string() });
-const threadSchema = z.object({ id: uuid, status: statusSchema, canAcceptDirectInput: z.boolean().nullable().optional() });
+const threadSchema = z.object({ id: uuid, status: statusSchema, cwd: z.string().optional(), canAcceptDirectInput: z.boolean().nullable().optional() });
 const permissionsSchema = z.object({ approvalPolicy: z.union([z.string(), z.record(z.string(), z.unknown())]),
   sandboxPolicy: z.object({ type: z.string() }) });
 const packetSchema = z.object({ id: z.union([z.string(), z.number()]).optional(), result: z.unknown().optional(),
@@ -104,6 +104,18 @@ export class AppServer {
       if (queue.data.length) status = 'busy';
     }
     return { status, mode: this.mode };
+  }
+
+  async hooks() { return this.request('hooks/list', { threadId: this.threadId }); }
+
+  async context() {
+    const { thread } = z.object({ thread: threadSchema }).parse(await this.request('thread/read', { threadId: this.threadId }));
+    if (thread.id !== this.threadId || thread.status.type === 'notLoaded' || thread.canAcceptDirectInput === false || !thread.cwd) {
+      throw new ThreadUnavailable('Cannot recover a closed, unloaded, or unidentified thread');
+    }
+    // Same loaded-thread permission refresh used by the existing receiver observer.
+    if (this.mode === 'unknown') await this.observe(() => {});
+    return { cwd: thread.cwd, owner: this.threadId, runtime: await this.runtime(), hasExecutionEnvironments: false };
   }
 
   async observe(onState: (state: Runtime) => void) {

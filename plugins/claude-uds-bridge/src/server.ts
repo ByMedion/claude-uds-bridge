@@ -8,6 +8,7 @@ import { Bridge, expirySchema, policySchema } from './bridge';
 import { HeldDialogs } from './held-dialogs';
 import { version } from './version';
 import { diagnoseConnection } from './diagnostics';
+import { prepareRecovery } from './recovery';
 
 const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
 const codexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex');
@@ -49,10 +50,10 @@ const server = new McpServer({ name: 'claude-uds-bridge', version }, { instructi
   + 'Answer a peer when it needs something from you.\n'
   + 'Settle who owns which files before two agents edit one repository. This plugin holds no locks.' });
 
-async function startReceiver(threadId: string, cwd: string) {
+async function startReceiver(threadId: string, cwd: string, generation?: string) {
   const child = Bun.spawn([process.execPath, join(import.meta.dir, `hook${extname(import.meta.path)}`)],
     { stdin: 'pipe', stdout: 'ignore', stderr: 'pipe', env: process.env });
-  child.stdin.write(JSON.stringify({ session_id: threadId, cwd, hook_event_name: 'SessionStart' }));
+  child.stdin.write(JSON.stringify({ session_id: threadId, cwd, hook_event_name: generation ? 'ReceiverRecover' : 'SessionStart', ...(generation && { generation }) }));
   child.stdin.end();
   const [code, error] = await Promise.all([child.exited, new Response(child.stderr).text()]);
   if (code !== 0) throw new Error(error.trim() || 'Session receiver hook failed');
@@ -88,11 +89,16 @@ server.registerTool('diagnose', { description: 'Read receiver startup errors, MC
   const status = bridge.status();
   return result({ ...status, connection: await diagnoseConnection(bridge.ipcPath, bridge.threadId, status.replyAddress ? bridge.target() : undefined) });
 });
-server.registerTool('recover_receiver', { description: 'Retry this chat receiver using the directory recorded by its active SessionStart lifecycle. Preserves held messages and inbox policy; never trusts hooks or starts another chat. Run diagnose first.',
+server.registerTool('recover_receiver', { description: 'Restore this current chat receiver, including an inactive lifecycle, after verifying live Codex owner/cwd/runtime and trusted enabled plugin hooks. Preserves held input/deadlines, permissions, inbox and the send budget. Returns an existing receiver unchanged. Run diagnose first; hook review is never automated.',
   inputSchema: {}, annotations: { readOnlyHint: false, openWorldHint: false } }, async (_args, extra) => {
   const bridge = current(extra._meta);
-  await startReceiver(bridge.threadId, bridge.recoveryContext().cwd);
-  return result(bridge.status());
+  const existing = bridge.status();
+  if (existing.replyAddress && existing.lifecycle?.active === 1) return result({ ...existing, recovery: { phase: 'receiver_active' } });
+  if (existing.replyAddress) throw new Error('session_ending: wait for the old receiver to stop and inspect status');
+  if (process.env.CODEX_THREAD_ID && process.env.CODEX_THREAD_ID !== bridge.threadId) throw new Error('Caller thread environment does not match MCP metadata');
+  const prepared = await prepareRecovery(bridge, join(import.meta.dir, '..'), codexHome);
+  await startReceiver(bridge.threadId, prepared.cwd, prepared.generation);
+  return result({ ...bridge.status(), recovery: { phase: 'restored', trust: prepared.trust } });
 });
 server.registerTool('inbox', { description: 'Open a dialog the user answers. Use view policy to set accept, hold, refuse or default, view expiry to set how long a held message waits, and view held to put the oldest held message in front of the user. Only that answer releases held input, and the held text stays out of your context either way.',
   inputSchema: { view: z.enum(['policy', 'held', 'expiry']) }, annotations: { openWorldHint: false } }, async ({ view }, extra) => {

@@ -132,6 +132,32 @@ export class Bridge {
       ?? this.beginSession();
   }
 
+  lifecycle() {
+    return this.db.query<{ generation: string; active: number }, []>('SELECT generation,active FROM lifecycle WHERE singleton=1').get() ?? null;
+  }
+
+  activateRecovery(expected: { generation: string; active: number } | null, cwd: string) {
+    return this.db.transaction(() => {
+      const current = this.lifecycle();
+      if (current?.generation !== expected?.generation || current?.active !== expected?.active) {
+        throw new Error('recovery_in_progress_or_session_ended: lifecycle changed; inspect status');
+      }
+      const generation = current?.active ? current.generation : randomUUID();
+      this.db.run('INSERT INTO lifecycle VALUES (1,?,1) ON CONFLICT(singleton) DO UPDATE SET generation=excluded.generation,active=1', [generation]);
+      this.recordReceiverStart(cwd);
+      return generation;
+    }).immediate();
+  }
+
+  recoveryGeneration(generation: string | undefined, cwd: string) {
+    const state = this.lifecycle();
+    if (!generation || state?.active !== 1 || state.generation !== generation
+      || this.db.query<{ cwd: string }, []>('SELECT cwd FROM receiver_start WHERE singleton=1').get()?.cwd !== cwd) {
+      throw new Error('session_ended_during_recovery: recovery lease is no longer active');
+    }
+    return generation;
+  }
+
   recordReceiverStart(cwd: string, error: string | null = null) {
     this.db.run('INSERT INTO receiver_start VALUES (1,?,?,?) ON CONFLICT(singleton) DO UPDATE SET cwd=excluded.cwd,error=excluded.error,updated_at=excluded.updated_at',
       [cwd, error, Date.now()]);
@@ -158,7 +184,7 @@ export class Bridge {
 
   endSession() {
     return this.db.transaction(() => {
-      this.db.run('INSERT INTO lifecycle VALUES (1,?,0) ON CONFLICT(singleton) DO UPDATE SET active=0', [randomUUID()]);
+      this.db.run('INSERT INTO lifecycle VALUES (1,?,0) ON CONFLICT(singleton) DO UPDATE SET generation=excluded.generation,active=0', [randomUUID()]);
       this.db.run("UPDATE idle_requests SET status='expired' WHERE direction='out' AND status IN ('waiting','unknown')");
       return this.db.query<{ pid: number; proc_start: string }, []>('SELECT pid,proc_start FROM receiver WHERE singleton=1').get();
     })();
@@ -670,7 +696,7 @@ export class Bridge {
       receiverStart: this.db.query<{ cwd: string; error: string | null; updated_at: number }, []>('SELECT cwd,error,updated_at FROM receiver_start WHERE singleton=1').get(),
       name: receiver?.name ?? null, replyAddress: receiver ? peerAddress(receiver.messagingSocketPath) : null,
       transport: this.target().kind, transportPath: this.target().path,
-      runtime: this.runtime(), automaticMessageBudget: this.budget.status(),
+      runtime: this.runtime(), lifecycle: this.lifecycle(), automaticMessageBudget: this.budget.status(),
       inboundPolicy: this.policy(), dialogExpiry: this.dialogExpiry(), heldCount: this.held().length, unreadCount: this.unreadCount(),
       idleRequests: this.db.query<Pick<Subscription, 'id' | 'peer_id' | 'direction'> & { status: string }, [number]>(
         'SELECT id,peer_id,direction,status FROM idle_requests WHERE expires_at>?').all(Date.now()),

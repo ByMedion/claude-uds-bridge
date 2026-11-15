@@ -8,7 +8,7 @@ import { peers, privateDirectory, processStart, uuid } from './claude';
 import { discoverTarget, watchCodex } from './codex';
 
 const eventSchema = z.object({ session_id: uuid, cwd: z.string().refine(isAbsolute),
-  hook_event_name: z.enum(['SessionStart', 'SessionEnd']), generation: uuid.optional() });
+  hook_event_name: z.enum(['SessionStart', 'SessionEnd', 'ReceiverRecover']), generation: uuid.optional() });
 const event = eventSchema.parse(JSON.parse(await Bun.stdin.text()));
 const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
 const codexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex');
@@ -87,7 +87,8 @@ async function runHook() {
       state.recordReceiverStart(event.cwd);
       return;
     }
-    const generation = state.resumeSession();
+    const generation = event.hook_event_name === 'ReceiverRecover'
+      ? state.recoveryGeneration(event.generation, event.cwd) : state.resumeSession();
     state.recordReceiverStart(event.cwd);
     try { await launchReceiver(generation); }
     catch (error) {

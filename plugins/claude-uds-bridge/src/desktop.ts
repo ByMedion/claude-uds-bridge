@@ -5,6 +5,7 @@ import net from 'node:net';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { isAbsolute } from 'node:path';
 import { checkSocket, uuid } from './claude';
 import { desktopInputs } from './desktop-input';
 
@@ -18,6 +19,8 @@ type Packet = z.infer<typeof packetSchema>;
 const maxDesktopFrameBytes = 256 * 1024 * 1024;
 const snapshotSchema = z.object({ cwd: z.string().min(1), threadRuntimeStatus: z.object({ type: z.string() }),
   turns: z.unknown().optional(), turnHistory: z.unknown().optional(),
+  selectedEnvironmentIds: z.array(z.string()).optional(),
+  executionEnvironments: z.array(z.unknown()).optional(),
   currentPermissions: z.object({ approvalPolicy: z.union([z.string(), z.record(z.string(), z.unknown())]),
     sandboxPolicy: z.object({ type: z.string() }).optional() }).optional() });
 type Snapshot = z.infer<typeof snapshotSchema>;
@@ -137,6 +140,15 @@ class DesktopConnection {
     return { status: state.threadRuntimeStatus.type === 'idle' ? 'idle'
       : state.threadRuntimeStatus.type === 'active' ? 'busy' : 'unknown',
       mode: permissionMode(state.currentPermissions) };
+  }
+
+  async context() {
+    const state = await this.snapshot();
+    if (!isAbsolute(state.cwd)) throw new Error('Native thread cwd is not absolute');
+    return { cwd: state.cwd, owner: this.ownerId!, runtime: {
+      status: state.threadRuntimeStatus.type === 'idle' ? 'idle' as const : state.threadRuntimeStatus.type === 'active' ? 'busy' as const : 'unknown' as const,
+      mode: permissionMode(state.currentPermissions),
+    }, hasExecutionEnvironments: !!(state.selectedEnvironmentIds?.length || state.executionEnvironments?.length) };
   }
 
   async inputs() { return desktopInputs(await this.snapshot()); }
@@ -335,5 +347,11 @@ export async function readDesktopRuntime(path: string, threadId: string) {
 export async function readDesktopInputs(path: string, threadId: string) {
   const connection = new DesktopConnection(path, threadId);
   try { await connection.connect(); return await connection.inputs(); }
+  finally { connection.close(); }
+}
+
+export async function readDesktopContext(path: string, threadId: string) {
+  const connection = new DesktopConnection(path, threadId);
+  try { await connection.connect(); return await connection.context(); }
   finally { connection.close(); }
 }

@@ -74,18 +74,18 @@ test('receiver recovery preserves held input and requires an active recorded lif
   } finally { db.close(); await bridge.close(); rmSync(root, { recursive: true }); }
 });
 
-test('MCP exposes diagnostics and refuses recovery before its trusted lifecycle', async () => {
+test('MCP exposes diagnostics and requires a reachable live owner for inactive recovery', async () => {
   const root = mkdtempSync('/tmp/uds-diag-mcp-');
   const client = new Client({ name: 'test', version: '1' });
   try {
     await client.connect(new StdioClientTransport({ command: process.execPath,
       args: [process.env.UDS_MCP_TEST_ENTRYPOINT ?? join(import.meta.dir, '../src/server.ts')],
-      env: { CODEX_HOME: root, CLAUDE_CONFIG_DIR: root } }));
+      env: { CODEX_HOME: root, CLAUDE_CONFIG_DIR: root, TMPDIR: root } }));
     const names = (await client.listTools()).tools.map(tool => tool.name);
     expect(names).toContain('diagnose');
     expect(names).toContain('recover_receiver');
     const result = await client.callTool({ name: 'recover_receiver', arguments: {}, _meta: { threadId: randomUUID() } });
     expect(result.isError).toBe(true);
-    expect(JSON.stringify(result)).toContain('trusted SessionStart');
+    expect(JSON.stringify(result)).toContain('No reachable Desktop IPC socket');
   } finally { await client.close(); rmSync(root, { recursive: true }); }
 });

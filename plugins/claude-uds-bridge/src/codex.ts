@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { tmpdir } from 'node:os';
 import { AppServer, AppServerDisconnected, ThreadUnavailable, withAppServer } from './app-server';
 import { privateDirectory } from './claude';
-import { deliverToDesktop, DesktopDisconnected, DeliveryUnsupported, readDesktopInputs, readDesktopRuntime, watchDesktop, type DeliveryMode, type Runtime } from './desktop';
+import { deliverToDesktop, DesktopDisconnected, DeliveryUnsupported, readDesktopInputs, readDesktopRuntime, readDesktopContext, watchDesktop, type DeliveryMode, type Runtime } from './desktop';
 
 export const targetSchema = z.object({ kind: z.enum(['app-server', 'desktop']), path: z.string() });
 export type Target = z.infer<typeof targetSchema>;
@@ -102,4 +102,10 @@ export function deliverToCodex(target: Target, threadId: string, inputId: string
   if (target.kind === 'desktop') return deliverToDesktop(target.path, threadId, inputId, text, delivery);
   if (delivery === 'queue') return Promise.reject(new DeliveryUnsupported('App-server queue does not support peer tool-output authority; no input was submitted'));
   return withAppServer(target.path, threadId, server => server.submit(inputId, text));
+}
+
+export type CodexContext = { cwd: string; owner: string; runtime: Runtime; hasExecutionEnvironments: boolean };
+export function readCodexContext(target: Target, threadId: string): Promise<CodexContext> {
+  return target.kind === 'desktop' ? readDesktopContext(target.path, threadId)
+    : withAppServer(target.path, threadId, server => server.context());
 }
