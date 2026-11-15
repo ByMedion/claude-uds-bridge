@@ -6,12 +6,10 @@ import { frameSchema, privateDirectory, SendRefused, serializeFrame, type Peer }
 
 // Independent of the package version. Bump revision only when these instructions change.
 export const deliveryHelp = {
-  revision: 2,
-  text: '[Claude UDS Bridge: reply delivery]\n'
-    + 'With your native SendMessage, choose how a reply reaches Codex by putting one marker on the first line of its text:\n'
-    + '[bridge:queue] — enqueue after the current Codex turn.\n'
-    + '[bridge:steer] — join the active turn, or start one when idle (default).\n'
-    + 'These are text markers, not extra SendMessage arguments. Queue requires a compatible Codex recipient; unsupported queue is refused without switching to steer.\n'
+  revision: 3,
+  text: '[Claude UDS Bridge: messages and compact]\n'
+    + 'Send ordinary text with native SendMessage; the Codex recipient receives it in its active turn, or starts a turn when idle (steer). No delivery marker is needed.\n'
+    + 'Queue delivery has been withdrawn. Do not use [bridge:queue] or request later priority: these requests are refused, never silently steered.\n'
     + 'To request context compaction of a Codex recipient, send exactly [bridge:compact] as a standalone message. Its human must first allow your Claude session in that chat using compact_access. Requests wait for idle; a separate compact_result reply reports completed, refused, expired or unknown. Wait for completed before scheduling new work in that chat. For unknown, inspect status instead of retrying.',
 };
 type Guide = { revision: number; text: string };

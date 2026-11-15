@@ -19,16 +19,12 @@ The adapter accepts stream versions 11 and 13 and retains the existing owner, co
 
 The public [openai/codex source](https://github.com/openai/codex/tree/b7056f3408522716b6643c8b3e23ce7c9b53b041) was searched at that SHA. Its IDE-context IPC client mentions the stream in a test, but the Desktop stream implementation and 11-to-13 schema history were not present. The checked public changelog and latest 40 GitHub releases did not explain the version bump. The exact upstream schema delta remains unknown.
 
-## Native queue admission
-
-On this build, `preparationMessageId` selects an ID-specific merge in the Desktop owner's queued-message coordinator. Admission first reserves that UUID with a non-null `preparation`, then replaces the reservation with the prepared text message. Both requests use method version 3 and retain unrelated queued messages. Replacing the whole queue is not used.
-
-A live test added a diagnostic item while its own chat was active, received `ok: true`, then removed precisely that UUID through the native removal method. This verified admission and removal without starting a diagnostic turn. Native execution after becoming idle was not tested live; fixture tests cover deferred admission, unread-input correlation, permission holds, preserving other queue items, failed preparation cleanup, and no resend after a lost acknowledgement.
-
-Queue delivery is enabled only for stream v13. The app-server queue takes `UserInput`, while this bridge uses `toolOutput` for peer authority; queue requests on that transport are rejected instead of converting peer input into a user prompt.
-
 ## Recovery boundaries
 
 Discovery probes only the primary Desktop endpoint and the known per-user legacy endpoint. It tries the legacy endpoint only after a missing/refused primary socket. Incompatible protocols and unsafe ownership fail closed. This can recover a compatible alternate router, but cannot repair an incompatible IDE/Desktop router or a missing Desktop owner.
 
 `recover_receiver` reuses an active lifecycle recorded by `SessionStart`; it never grants hook trust, changes inbox policy, resumes another chat, or replays an uncertain delivery. Held-message deadlines remain in force. A transient Desktop disconnect suspends permission-based acceptance until a fresh snapshot arrives.
+
+## Queue rollback (0.2.8)
+
+The earlier queue-admission integration has been reverted. Native queue endpoint versions in the evidence table describe the installed Desktop protocol, not a supported bridge delivery mode. The bridge no longer calls the admission/removal endpoints. See [TODO](../../TODO.md#revisit-queue-delivery) for observed coordination failures and the sender controls required before revisiting this feature. Existing native queued work is not modified by the rollback.

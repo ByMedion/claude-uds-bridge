@@ -18,7 +18,7 @@ codex plugin marketplace add LeonKohli/claude-uds-bridge
 codex plugin add claude-uds-bridge@leonkohli
 ```
 
-The ByMedion fork supports Desktop stream versions 11 and 13, adds receiver diagnostics and recovery, and supports native queue delivery on Desktop v13. Other stream versions are rejected. See [Desktop compatibility](plugins/claude-uds-bridge/DESKTOP-COMPATIBILITY.md) for the evidence and limits.
+The ByMedion fork supports Desktop stream versions 11 and 13, adds receiver diagnostics and recovery, and uses steering delivery only. Other stream versions are rejected. See [Desktop compatibility](plugins/claude-uds-bridge/DESKTOP-COMPATIBILITY.md) for the evidence and limits.
 
 To install this fork from a local checkout:
 
@@ -73,19 +73,17 @@ flowchart LR
 
 The app-server transport uses `turn/start` with `toolOutput`, which starts or joins a turn at tool authority. The bridge reads existing settings and leaves approval requests to your UI. If the observer connection drops, status and permissions are `unknown` while the bridge reconnects for up to 30 seconds. If recovery fails, the receiver exits. A lost delivery acknowledgement stays `unknown` and is never resent.
 
-`list_sessions` reports advertised `deliveryModes` and `bridgeVersion`. Choose queue only for a peer advertising it. `send_message` addresses a peer by `sessionId`, not by name; ambiguous registrations are refused.
+`list_sessions` reports advertised `deliveryModes` and `bridgeVersion`. Only `steer` is available; queue delivery was withdrawn. `send_message` addresses a peer by `sessionId`, not by name; ambiguous registrations are refused.
 
-## Choose steering or queue delivery
+## Message delivery
 
-`send_message` accepts `delivery: "steer"` (default) or `delivery: "queue"`. Steering joins the active turn, or starts one when idle. Queue delivery adds one item to the recipient's native Desktop queue and lets Codex schedule it after the current turn. The bridge preserves the existing queue and never substitutes steering for an unsupported queue request.
+Messages use steering: join the active turn, or start one when idle. No delivery marker is required. The optional compatibility argument accepts only `delivery: "steer"`; old queue requests are rejected before sending. The receiver also refuses `[bridge:queue]` and wire `priority: "later"`, including legacy held requests on release, rather than silently steering them.
 
-For Claude's native `SendMessage`, start the message text with `[bridge:queue]` on its own line. `[bridge:steer]` explicitly selects the default. These markers are bridge conventions; they do not require an extra Claude tool argument. Raw socket frames can also use `priority: "later"` for queue delivery; `now` and `next` retain steering behavior. A leading text marker takes precedence over the wire priority.
+Queue delivery was withdrawn in fork 0.2.8 after real use exposed invisible pending answers and missing sender edit/cancel controls. See [TODO](TODO.md#revisit-queue-delivery) for the problems and requirements before reconsidering it. Previously admitted queue records retain their IDs/input correlation; the rollback neither replays them as steering nor edits native queued work.
 
-The bridge attaches a short delivery guide to the first ordinary outgoing message to each Claude session, inside that same message. The guide explains only the reply markers and their delivery behavior. Its revision is independent of the plugin version and increases only when the guide changes. Tracking is shared across Codex chats in `plugin-state/claude-uds-bridge/delivery-help.sqlite`, keyed by the canonical Claude profile directory and session ID. A resumed session ID keeps its record; a new session ID receives the guide again. Codex recipients and control-only idle subscriptions do not receive it.
+The bridge attaches a short delivery guide to the first ordinary outgoing message to each Claude session, inside that same message. The current guide explains ordinary steering delivery, the queue withdrawal, and permitted compact requests. Its revision is independent of the plugin version and increases only when the guide changes. Tracking is shared across Codex chats in `plugin-state/claude-uds-bridge/delivery-help.sqlite`, keyed by the canonical Claude profile directory and session ID. A resumed session ID keeps its record; a new session ID receives the guide again. Codex recipients and control-only idle subscriptions do not receive it.
 
 The record confirms a successful send, not that Claude read or retained the guide. Concurrent sends reserve one guide attempt; another ordinary message can proceed while that attempt is pending. A crashed attempt's reservation expires after 20 seconds. A failed or uncertain send can leave the guide due for a later ordinary message, but the bridge never resends the original message automatically or creates an extra onboarding turn. If the guide would exceed the serialized size cap, the original message is sent unchanged and the guide is deferred. Unavailable guide bookkeeping also leaves the original send intact.
-
-Queue delivery requires Desktop stream v13. App-server delivery retains tool-output authority and rejects queue requests because its native queue accepts user input only. Outbound MCP queue requests require the peer to advertise `delivery_queue`; ordinary Claude peers and older bridges do not advertise it. `queued` confirms admission, not that a turn ran or a reply arrived. Held queue messages still require the normal release decision.
 
 ## Request context compaction from Claude
 
@@ -119,7 +117,7 @@ The sender sees Claude's status notices, among them `held`, `delivered`, `denied
 | Tool | Use |
 | --- | --- |
 | `list_sessions` | List IDs, names, agent kinds, advertised delivery modes, bridge versions, directories, status, and start time. |
-| `send_message` | Send text with `delivery: "steer"` or `"queue"`. Set `notify_when_idle` for one idle notice. |
+| `send_message` | Send ordinary text with steering delivery. Set `notify_when_idle` for one idle notice. |
 | `status` | Show the receiver and recent transport outcomes. |
 | `diagnose` | Show versions, startup errors, and transport reachability without submitting input. |
 | `recover_receiver` | Restore this current chat receiver after native context and hook-trust checks. |
@@ -131,7 +129,7 @@ The sender sees Claude's status notices, among them `held`, `delivered`, `denied
 - One message may reach 1,048,576 serialized characters. The sender refuses more before writing.
 - A burst of 30 messages to one agent exhausts the budget. It refills one message every two seconds.
 - At most 100 messages stay held and 50 accepted messages wait for Codex.
-- `socket-written`, `queued`, `accepted`, `started`, and `steered` report transport progress. A model reply is a separate event.
+- `socket-written`, `accepted`, `started`, and `steered` report transport progress; old `queued` records remain historical. A model reply is a separate event.
 - Idle subscriptions fire once and last at most 12 hours.
 - The bridge refuses attachments and says why. Send a shared path as text.
 - The bridge does not lock files. Agree on file ownership before two agents edit one repository.

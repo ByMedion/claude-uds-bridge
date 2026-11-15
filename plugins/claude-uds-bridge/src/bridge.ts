@@ -2,8 +2,8 @@ import { Database } from 'bun:sqlite';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
-import { accountReceipt, findPeer, findPeerProcess, hopChain, inbox, localChain, publishPeerKey, messageDelivery, peerAddress, peers, privateDirectory, processStart, register, SendRefused, sendFrames, senderMode, serializeFrame, socketPath, userFrame, uuid, type Frame, type Peer } from './claude';
-import { DeliveryUnsupported, type DeliveryMode, type Runtime } from './desktop';
+import { accountReceipt, queueRemoved, DeliveryUnsupported, type DeliveryMode, findPeer, findPeerProcess, hopChain, inbox, localChain, publishPeerKey, messageDelivery, peerAddress, peers, privateDirectory, processStart, register, SendRefused, sendFrames, senderMode, serializeFrame, socketPath, userFrame, uuid, type Frame, type Peer } from './claude';
+import { type Runtime } from './desktop';
 import { deliverToCodex, readCodexInputs, readCodexRuntime, readCompactions, compactCodex, targetSchema, type Target } from './codex';
 import { z } from 'zod';
 import { outboundServer, refreshReceiver, sendViaReceiver } from './outbound';
@@ -249,7 +249,7 @@ export class Bridge {
       this.closeOutbound = await outboundServer(socketPath(this.listener.address).replace(/\.sock$/, '.out'), this.configDir, this.listener.address,
         frames => !this.closing && (!frames.some(frame => frame.type === 'control' && frame.action === 'peer_idle_notice' && frame.state === 'idle') || this.canNotifyIdle()),
         () => this.scheduleExpiry());
-      this.registration = await register(this.configDir, this.threadId, this.listener.address, cwd, this.runtime().status, this.target().kind === 'desktop');
+      this.registration = await register(this.configDir, this.threadId, this.listener.address, cwd, this.runtime().status);
       if (this.closing) throw new Error('Receiver is closing');
       for (const message of this.db.query<Message, []>("SELECT * FROM messages WHERE direction='in' AND status='pending' ORDER BY created_at,rowid").all()) {
         if (this.closing) break;
@@ -332,9 +332,7 @@ export class Bridge {
       await this.expireSubscriptions();
       if (sessionId === this.threadId) throw new Error('Cannot send to this task itself');
       const peer = findPeer(this.configDir, sessionId);
-      if (text && delivery === 'queue' && !peer.peerFeatures.includes('delivery_queue')) {
-        throw new SendRefused('Target does not advertise queue delivery; no message was sent');
-      }
+      if (text && delivery !== 'steer') throw new SendRefused(queueRemoved);
       if (!text && !notifyWhenIdle) throw new Error('A message or notify_when_idle is required');
       if (notifyWhenIdle && (!peer.peerFeatures.includes('notify_idle') || this.policy() === 'refuse')) {
         throw new Error('Idle subscription unavailable: target must support notify_idle and this inbox must not refuse incoming notices');
@@ -433,7 +431,16 @@ export class Bridge {
       }
       return;
     }
-    await this.acceptIncoming(frame.msg_id, peer, frame.message.content, senderMode(frame.message.content) ?? null, compactMarker(frame.message.content) ? 'compact-request' : 'message', messageDelivery(frame.message.content, frame.priority), frame.local_chain ?? null, localChain(frame, peer, authenticated));
+    if (messageDelivery(frame.message.content, frame.priority) === 'queue') {
+      const inserted = this.db.run("INSERT OR IGNORE INTO messages(id,peer_id,direction,text,status,peer_address,peer_start,status_reason,delivery_mode) VALUES (?,?,'in',?,'refused',?,?,?,'queue')",
+        [frame.msg_id, peer.sessionId, frame.message.content, frame.from, peer.procStart ?? null, queueRemoved]);
+      if (inserted.changes) {
+        const message = this.db.query<Message, [string]>('SELECT * FROM messages WHERE id=?').get(frame.msg_id);
+        if (message) await this.receipt(message, 'refused');
+      }
+      return;
+    }
+    await this.acceptIncoming(frame.msg_id, peer, frame.message.content, senderMode(frame.message.content) ?? null, compactMarker(frame.message.content) ? 'compact-request' : 'message', 'steer', frame.local_chain ?? null, localChain(frame, peer, authenticated));
   }
 
   private async acceptIncoming(id: string, peer: Peer, text: string, mode: string | null, kind: string, delivery: DeliveryMode = 'steer', fullChain: string | null = null, verifiedLocal = false) {
@@ -703,9 +710,7 @@ export class Bridge {
         this.db.run("UPDATE messages SET status='refused',awaiting_input=0,status_reason=? WHERE id=?", [error.message, message.id]);
         await this.receipt({ ...message, status_reason: error.message }, 'refused');
       } else {
-        const reason = message.delivery_mode === 'queue' && error instanceof Error
-          ? error instanceof z.ZodError ? 'Native queue response did not match the supported schema' : error.message : null;
-        this.db.run("UPDATE messages SET status='unknown',status_reason=? WHERE id=?", [reason, message.id]);
+        this.db.run("UPDATE messages SET status='unknown',status_reason=NULL WHERE id=?", [message.id]);
       }
     }
   }

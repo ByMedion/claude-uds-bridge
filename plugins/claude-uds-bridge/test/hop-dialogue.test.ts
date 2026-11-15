@@ -157,7 +157,7 @@ test('hop metadata alone cannot distinguish new semantic work from cyclic forwar
   } finally { db.close(); }
 });
 
-test('authenticated local lineage survives a permission hold and native queue consumption', async () => {
+test('authenticated local lineage survives a permission hold and steered input consumption', async () => {
   const f = await dialogue(true);
   const audit = new Database(join(f.stateDir, `${f.desktop.threadId}.sqlite`));
   try {
@@ -166,18 +166,18 @@ test('authenticated local lineage survives a permission hold and native queue co
     const id = randomUUID();
     const full = [own, 'b'.repeat(24)].join(',');
     const reply = { ...userFrame(findPeer(f.configDir, f.desktop.threadId), peerAddress(f.peerPath),
-      'synthetic-native', f.peerId, id, 'queued reply', 'prompting', null, [own, 'c'.repeat(24)], 'queue'), local_chain: full };
+      'synthetic-native', f.peerId, id, 'held reply', 'prompting', null, [own, 'c'.repeat(24)], 'steer'), local_chain: full };
     await f.bridge.setPolicy('hold');
     await sendFrames(f.configDir, findPeer(f.configDir, f.desktop.threadId), [reply]);
     await until(() => f.bridge.status().heldCount === 1);
     expect(audit.query('SELECT local_verified,local_chain FROM messages WHERE id=?').get(id))
       .toEqual({ local_verified: 1, local_chain: full });
-    expect(f.desktop.queuedMessages.size).toBe(0);
+    expect(f.desktop.submissions).toHaveLength(0);
     await f.bridge.setPolicy('accept');
-    const queued = f.bridge.status().messages.find(message => message.id === id)!;
-    expect(queued.status).toBe('queued');
-    f.commitPeer(queued.input_id!);
-    await f.bridge.sendMessage(f.peerId, 'after consuming queued reply');
+    const accepted = f.bridge.status().messages.find(message => message.id === id)!;
+    expect(accepted.status).toBe('started');
+    f.commitPeer(accepted.input_id!);
+    await f.bridge.sendMessage(f.peerId, 'after consuming held reply');
     const outgoing = f.frames.filter(frame => frame.type === 'user').at(-1)!;
     if (outgoing.type !== 'user') throw new Error('Missing user frame');
     expect(outgoing.local_chain?.split(',')).toEqual([own, 'b'.repeat(24), own]);

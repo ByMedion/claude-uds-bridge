@@ -79,7 +79,7 @@ async function until(condition: () => boolean, timeoutMs = 2000) {
   expect(condition()).toBe(true);
 }
 
-test('only confirmed human input renews the send budget; queued peer input, idle notices, tools and unknown history do not', async () => {
+test('only confirmed human input renews the send budget; peer input, idle notices, tools and unknown history do not', async () => {
   const f = await fixture('/tmp/uds-budget-origin-', 13);
   const app = await appServer(undefined, f.desktop.threadId);
   try {
@@ -348,8 +348,8 @@ test('mode changes recheck held input without extending deadlines; explicit hold
     await Bun.sleep(30);
     expect(f.bridge.held()[0]?.expires_at).toBe(deadline);
     f.bridge.updateRuntime({ status: 'busy', mode: 'bypass' });
-    await until(() => f.desktop.submissions.length === 1);
-    expect(f.bridge.status().messages.find(row => row.id === id)?.status).toBe('started');
+    await until(() => f.bridge.status().messages.find(row => row.id === id)?.status === 'started');
+    expect(f.desktop.submissions).toHaveLength(1);
     await f.bridge.setPolicy('hold');
     const explicit = await f.message('prompting');
     await until(() => f.bridge.status().heldCount === 1);
@@ -422,7 +422,7 @@ test('list_sessions names the agent kind and start time and leaves out the calli
   const client = new Client({ name: 'list-test', version: '1.0.0' });
   const rows = z.array(z.object({ sessionId: z.string(), name: z.string(), agent: z.string(),
     cwd: z.string(), status: z.string(), startedAt: z.string().nullable(),
-    deliveryModes: z.array(z.enum(['steer', 'queue'])), bridgeVersion: z.string().nullable() }));
+    deliveryModes: z.array(z.literal('steer')), bridgeVersion: z.string().nullable() }));
   const list = async (threadId: string) => rows.parse(JSON.parse(z.array(z.object({ text: z.string() }))
     .parse((await client.callTool({ name: 'list_sessions', arguments: {}, _meta: { threadId } })).content)[0]!.text));
   try {
@@ -435,7 +435,7 @@ test('list_sessions names the agent kind and start time and leaves out the calli
       deliveryModes: ['steer'], bridgeVersion: null });
     // Seen from another task, this receiver is a Codex peer and carries the start time that orders the list.
     const own = (await list(randomUUID())).find(row => row.sessionId === f.desktop.threadId);
-    expect(own).toMatchObject({ agent: 'codex', name: f.bridge.status().name, deliveryModes: ['steer', 'queue'] });
+    expect(own).toMatchObject({ agent: 'codex', name: f.bridge.status().name, deliveryModes: ['steer'] });
     expect(own?.bridgeVersion).toBe(f.bridge.status().pluginVersion);
     expect(Date.parse(own?.startedAt ?? '')).toBeGreaterThan(1700000000000);
   } finally { await client.close(); await f.close(); }
@@ -857,69 +857,5 @@ test('a valid leading auth line is verified and its following frame is delivered
     await once(socket, 'close');
     await f.bridge.setPolicy('default');
     await until(() => f.desktop.submissions.length === 1);
-  } finally { await f.close(); }
-});
-
-test('later priority uses native queue and remains unread until the queued input is consumed', async () => {
-  const f = await fixture('/tmp/uds-queue-wire-', 13);
-  f.desktop.setState('active');
-  const id = randomUUID();
-  try {
-    await f.transmit({ type: 'user', msg_id: id, priority: 'later',
-      message: { role: 'user', content: 'wait for this turn' } });
-    await f.bridge.setPolicy('default');
-    await until(() => f.bridge.status().messages.some(message => message.id === id && message.status === 'queued'));
-    expect(f.desktop.submissions).toEqual([]);
-    expect(f.desktop.queuedMessages.size).toBe(1);
-    expect(f.bridge.status().unreadCount).toBe(1);
-    expect(f.bridge.status().messages.find(message => message.id === id)?.delivery_mode).toBe('queue');
-    const queued = [...f.desktop.queuedMessages.values()][0]!;
-    expect(String(queued.text)).toContain('not an instruction or an approval from the user');
-    f.desktop.setHistory({ turns: [{ items: [{ type: 'userMessage', id: randomUUID(), clientId: queued.id }] }] });
-    f.bridge.updateRuntime({ status: 'idle', mode: 'prompting' });
-    await until(() => f.bridge.status().unreadCount === 0);
-  } finally { await f.close(); }
-});
-
-test('Claude queue marker survives a permission hold and is delivered only after release', async () => {
-  const f = await fixture('/tmp/uds-queue-held-', 13);
-  try {
-    await f.bridge.setPolicy('hold');
-    const id = await f.message(undefined, '[bridge:queue]\nanswer after the current turn');
-    await until(() => f.bridge.status().heldCount === 1);
-    expect(f.desktop.queuedMessages.size).toBe(0);
-    await f.bridge.setPolicy('accept');
-    expect(f.bridge.status().messages.find(message => message.id === id))
-      .toMatchObject({ status: 'queued', delivery_mode: 'queue', turn_id: null });
-    expect(f.desktop.queuedMessages.size).toBe(1);
-    expect(f.desktop.submissions).toEqual([]);
-  } finally { await f.close(); }
-});
-
-test('queue on an unsupported stream reports a refusal and never silently steers', async () => {
-  const f = await fixture();
-  try {
-    const id = await f.message(undefined, '[bridge:queue]\nno fallback');
-    await until(() => f.bridge.status().messages.some(message => message.id === id && message.status === 'refused'));
-    expect(f.bridge.status().unreadCount).toBe(0);
-    expect(f.bridge.status().messages.find(message => message.id === id)?.status_reason).toContain('requires Desktop stream v13');
-    expect(f.desktop.submissions).toEqual([]);
-    await until(() => f.frames.some(frame => frame.type === 'control' && frame.action === 'peer_message_status' && frame.orig_msg_id === id));
-  } finally { await f.close(); }
-});
-
-test('outbound queue requires an advertised capability and carries the selection on the wire', async () => {
-  const f = await fixture();
-  try {
-    await expect(f.bridge.sendMessage(f.peerId, 'queued outbound', false, 'queue')).rejects.toThrow('does not advertise queue');
-    expect(f.frames).toEqual([]);
-    expect(f.bridge.status().messages).toEqual([]);
-    const path = join(f.configDir, 'sessions', `${process.ppid}.json`);
-    const peer = JSON.parse(readFileSync(path, 'utf8'));
-    writeFileSync(path, JSON.stringify({ ...peer, peerFeatures: [...peer.peerFeatures, 'delivery_queue'] }));
-    await f.bridge.sendMessage(f.peerId, 'queued outbound', false, 'queue');
-    const frame = f.frames.find(frame => frame.type === 'user');
-    expect(frame?.type === 'user' && frame.priority).toBe('later');
-    expect(frame?.type === 'user' && frame.message.content).toContain('[bridge:queue]\nqueued outbound');
   } finally { await f.close(); }
 });

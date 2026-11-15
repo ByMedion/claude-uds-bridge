@@ -20,7 +20,7 @@ The native Desktop operation is `thread-follower-compact-thread` version 1; app-
 
 A final `compact_result` message includes the original request message ID and status (`completed`, `refused`, `expired`, or `unknown`). Claude must wait for completed before assigning the next job in that chat. For unknown, inspect status rather than sending another compact request. A refused unauthenticated/ungranted request receives a refusal receipt; it does not start an unsolicited model turn in Claude. Notifications themselves remain subject to transport failure and sender limits.
 
-`status.compactions` retains recent operation states/reasons; `status.compactAccess` lists allowed Claude session IDs. `list_sessions.supportsCompactRequests` advertises protocol support, not permission. The automatically attached guide is revision 2, so an existing Claude session receives the new usage instructions on its next ordinary authorized bridge message.
+`status.compactions` retains recent operation states/reasons; `status.compactAccess` lists allowed Claude session IDs. `list_sessions.supportsCompactRequests` advertises protocol support, not permission. The automatically attached guide is revision 3, so an existing Claude session receives the new usage instructions on its next ordinary authorized bridge message.
 
 ## Budget and lifecycle
 

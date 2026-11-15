@@ -3,8 +3,8 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { tmpdir } from 'node:os';
 import { AppServer, AppServerDisconnected, ThreadUnavailable, withAppServer } from './app-server';
-import { privateDirectory } from './claude';
-import { deliverToDesktop, DesktopDisconnected, DeliveryUnsupported, readDesktopInputs, readDesktopRuntime, readDesktopContext, readDesktopCompactions, compactDesktop, watchDesktop, type DeliveryMode, type Runtime } from './desktop';
+import { privateDirectory, queueRemoved, DeliveryUnsupported, type DeliveryMode } from './claude';
+import { deliverToDesktop, DesktopDisconnected, readDesktopInputs, readDesktopRuntime, readDesktopContext, readDesktopCompactions, compactDesktop, watchDesktop, type Runtime } from './desktop';
 
 export const targetSchema = z.object({ kind: z.enum(['app-server', 'desktop']), path: z.string() });
 export type Target = z.infer<typeof targetSchema>;
@@ -99,8 +99,8 @@ export function readCodexInputs(target: Target, threadId: string, awaiting: stri
 }
 
 export function deliverToCodex(target: Target, threadId: string, inputId: string, text: string, delivery: DeliveryMode = 'steer') {
-  if (target.kind === 'desktop') return deliverToDesktop(target.path, threadId, inputId, text, delivery);
-  if (delivery === 'queue') return Promise.reject(new DeliveryUnsupported('App-server queue does not support peer tool-output authority; no input was submitted'));
+  if (delivery !== 'steer') return Promise.reject(new DeliveryUnsupported(queueRemoved));
+  if (target.kind === 'desktop') return deliverToDesktop(target.path, threadId, inputId, text);
   return withAppServer(target.path, threadId, server => server.submit(inputId, text));
 }
 

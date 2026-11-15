@@ -14,7 +14,7 @@ Standalone control/idle subscriptions do not consume text allowance. A definite 
 
 The budget and compaction secret live in the existing per-chat SQLite database and are not reset by SessionStart/End. Before the first confirmed input in a new chat, the initial allowance is also bounded at 100. Installing this version does not replay old dropped messages or automatically restart active older receivers. Restart Codex to load the new MCP and receiver, then obtain a fresh delivered response for any work depending on a dropped reply.
 
-Offline tests cover 100 sends with native-shaped local compaction through the receiver's outbound adapter, two/three-party cycles and recipient changes, full-tail truncation, MCP/receiver restart, refusal of send 101, renewed send after human input, four competing reservation processes, authentication spoofing, malformed chains, legacy behavior, held/queued lineage, and input-origin classification. These are synthetic wire peers and a Desktop fixture, not a live Claude acceptance run.
+Offline tests cover 100 sends with native-shaped local compaction through the receiver's outbound adapter, two/three-party cycles and recipient changes, full-tail truncation, MCP/receiver restart, refusal of send 101, renewed send after human input, four competing reservation processes, authentication spoofing, malformed chains, legacy behavior, held lineage, legacy queued-record correlation, and input-origin classification. These are synthetic wire peers and a Desktop fixture, not a live Claude acceptance run.
 
 ## Historical finding in 0.2.4/0.2.5
 
@@ -111,3 +111,5 @@ A stronger request/reply contract would need all of the following, rather than a
 Request/reply labels distinguish protocol relationships, not the truth of an agent's semantic claim. An aggregate scope budget or user-controlled renewal is necessary if protection must also cover agents that keep declaring new requests. The scope size and renewal rule are product decisions still to be made.
 
 The 0.2.6 implementation uses the bounded native local-dialogue contract instead of these explicit request/reply extensions. Dropped text must not be replayed or treated as an approval; a fresh, actually delivered reply is needed for any work depending on it.
+
+Queue delivery was withdrawn in 0.2.8. References to switching steer/queue in the historical investigation describe older versions; queued history still does not become a human reset.
