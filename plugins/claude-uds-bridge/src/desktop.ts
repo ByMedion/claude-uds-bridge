@@ -1,6 +1,6 @@
-// Codex desktop IPC at $CODEX_HOME/ipc/ipc.sock. This interface is internal and unversioned, so an
+// Codex desktop IPC at $CODEX_HOME/ipc/ipc.sock. This interface has no public compatibility guarantee, so an
 // app update can change it; delivery then fails as 'unknown' rather than silently doing the wrong thing.
-// Stream payloads are pinned to version 11 below for that reason.
+// Stream payloads are explicitly supported at versions 11 and 13; other versions fail closed.
 import net from 'node:net';
 import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
@@ -224,7 +224,9 @@ class DesktopConnection {
           const params = z.object({ conversationId: z.string(), change: z.object({ type: z.string(), conversationState: z.unknown().optional(),
             patches: z.array(z.object({ path: z.array(z.union([z.string(), z.number()])), value: z.unknown().optional() })).optional() }) }).parse(packet.params);
           if (params.conversationId !== this.threadId) continue;
-          if (packet.version !== 11) throw new Error('Unsupported Desktop stream version');
+          if (packet.version !== 11 && packet.version !== 13) {
+            throw new Error(`Unsupported Desktop stream version: ${packet.version} (supported: 11, 13)`);
+          }
           if (params.change.type === 'snapshot') this.snapshotResult?.resolve(snapshotSchema.parse(params.change.conversationState));
           else if (this.onState && params.change.type === 'patches' && params.change.patches?.some(patch =>
             patch.path.length === 0 || ['threadRuntimeStatus', 'currentPermissions'].includes(String(patch.path[0])))) {
