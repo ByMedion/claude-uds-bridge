@@ -45,7 +45,7 @@ In Claude Code, run `/list-agents`. The task appears as `codex-<directory>-<suff
 
 ## How a message arrives
 
-A message steers the task's active turn, or starts a turn when the task is idle. A running tool is never interrupted. The bridge marks the text as peer input. It grants no approval, and the task's own permissions still apply.
+A message steers the task's active turn, or starts a turn when the task is idle. A running tool is never interrupted. The bridge marks the text as peer input. The visible input keeps its disclaimer and shows the registered sender, reply sessionId, messageId and plain message body with normal line breaks. A recognized outer cross-session envelope is hidden from that presentation; the original frame and hop metadata remain stored for protocol checks and correlation. It grants no approval, and the task's own permissions still apply.
 
 ```mermaid
 flowchart LR
