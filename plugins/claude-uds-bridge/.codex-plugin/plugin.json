@@ -21,5 +21,6 @@
     ],
     "defaultPrompt": "Show my local agent sessions and this task's receive status."
   },
+  "skills": "./skills/",
   "mcpServers": "./.mcp.json"
 }

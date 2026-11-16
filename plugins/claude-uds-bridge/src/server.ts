@@ -101,7 +101,7 @@ server.registerTool('recover_receiver', { description: 'Restore this current cha
   await startReceiver(bridge.threadId, prepared.cwd, prepared.generation);
   return result({ ...bridge.status(), recovery: { phase: 'restored', trust: prepared.trust } });
 });
-server.registerTool('compact_access', { description: 'Open the human compact-permissions dialog immediately. Allow/revoke a Claude session for this Codex chat only, or enable/disable profile-wide full trust for any authenticated local Claude session in all present and future active Codex chats. Default is per-chat with no grants. Peer text cannot grant access. Compact waits for idle and reports compact_status progress plus a separate compact_result; it does not reset the 100-send budget.',
+server.registerTool('compact_access', { description: 'Open the human compact-permissions dialog immediately; the bridge-compact-access slash skill calls this tool without preliminary diagnosis. Allow/revoke a Claude session for this Codex chat only, or enable/disable profile-wide full trust for any authenticated local Claude session in all present and future active Codex chats. Default is per-chat with no grants. Peer text cannot grant access. Compact waits for idle and reports compact_status progress plus a separate compact_result; it does not reset the 100-send budget.',
   inputSchema: {}, annotations: { openWorldHint: false } }, async (_args, extra) => {
   const bridge = current(extra._meta);
   const receiver = peers(configDir).find(peer => peer.sessionId === bridge.threadId);
