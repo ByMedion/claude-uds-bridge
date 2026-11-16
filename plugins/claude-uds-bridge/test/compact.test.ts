@@ -39,7 +39,7 @@ test('compact waits for a quiet idle boundary, distinguishes admission from comp
     expect(f.bridge.status().automaticMessageBudget.used).toBe(100);
     f.desktop.completeCompaction();
     await eventually(() => f.bridge.status().compactions.find(row => row.id === id)?.status === 'completed');
-    await eventually(() => f.frames.some(frame => frame.type === 'user' && frame.message.content.includes('compact_result')));
+    await eventually(() => f.frames.some(frame => frame.type === 'user' && frame.message.content.includes('"event":"compact_result"')));
     expect(f.frames.filter(frame => frame.type === 'user')).toHaveLength(1);
     expect(f.desktop.submissions).toHaveLength(0);
     expect(f.bridge.status().automaticMessageBudget.used).toBe(100);
@@ -60,7 +60,7 @@ test('loss of native compact acknowledgement never causes an automatic resubmiss
     await eventually(() => f.bridge.status().compactions.find(row => row.id === id)?.status === 'unknown', 5000);
     await Bun.sleep(1100);
     expect(f.desktop.compactions).toHaveLength(1);
-    expect(f.bridge.status().automaticMessageBudget.used).toBe(1);
+    expect(f.bridge.status().automaticMessageBudget.used).toBe(2);
   } finally { await f.close(); }
 }, 10000);
 
@@ -112,8 +112,8 @@ test('a completed canonical historical item does not block dispatch and a fresh 
     f.desktop.setState('idle');
     await eventually(() => f.bridge.status().compactions.find(row => row.id === id)?.status === 'completed');
     expect(f.desktop.compactions).toHaveLength(1);
-    await eventually(() => f.frames.some(frame => frame.type === 'user' && frame.message.content.includes('compact_result')));
-    expect(f.frames.filter(frame => frame.type === 'user' && frame.message.content.includes('compact_result'))).toHaveLength(1);
+    await eventually(() => f.frames.some(frame => frame.type === 'user' && frame.message.content.includes('"event":"compact_result"')));
+    expect(f.frames.filter(frame => frame.type === 'user' && frame.message.content.includes('"event":"compact_result"'))).toHaveLength(1);
   } finally { await f.close(); }
 }, 10000);
 
@@ -145,7 +145,7 @@ test('receiver restart after submission keeps access and budget, exposes unknown
     await f.restart();
     expect(f.bridge.status().compactAccess).toEqual([f.peerId]);
     expect(f.bridge.status().compactions.find(row => row.id === id)?.status).toBe('unknown');
-    expect(f.bridge.status().automaticMessageBudget.used).toBe(1);
+    expect(f.bridge.status().automaticMessageBudget.used).toBe(3);
     await Bun.sleep(1100);
     expect(f.desktop.compactions).toHaveLength(1);
   } finally { await f.close(); }

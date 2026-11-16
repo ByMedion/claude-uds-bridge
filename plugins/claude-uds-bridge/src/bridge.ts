@@ -120,6 +120,10 @@ export class Bridge {
     this.db.exec(`CREATE TABLE IF NOT EXISTS compaction_requests (
       id TEXT PRIMARY KEY, status TEXT NOT NULL, deadline INTEGER NOT NULL, quiet_since INTEGER,
       baseline TEXT, started_at INTEGER, notice_id TEXT NOT NULL, reason TEXT, approved INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS compact_notices (
+      request_id TEXT NOT NULL, phase TEXT NOT NULL, notice_id TEXT NOT NULL,
+      PRIMARY KEY(request_id,phase)
     )`);
   }
 
@@ -747,7 +751,18 @@ export class Bridge {
       this.db.run("UPDATE messages SET status='dropped',drop_reason=? WHERE id=?", [reason, message.id]);
       await this.receipt(message, 'dropped', reason); return;
     }
-    if (this.hasPendingCompact()) { await refuse('compact_already_pending: inspect the existing request before sending another'); return; }
+    const pending = this.db.query<{ id: string; peer_id: string }, []>(`SELECT r.id,m.peer_id FROM compaction_requests r
+      JOIN messages m ON m.id=r.id WHERE r.status IN ('waiting','submitting','submitted') LIMIT 1`).get();
+    if (pending) {
+      const reason = 'compact_already_pending: wait for the existing request result; do not retry';
+      await refuse(reason);
+      // Only an authenticated, granted, guard-admitted sender gets an ordinary
+      // explanatory reply. Do not disclose another sender's request ID.
+      await this.compactNotice(message, randomUUID(), 'refused', reason, {
+        pendingRequestId: pending.peer_id === message.peer_id ? pending.id : undefined, spareResult: true,
+      });
+      return;
+    }
     this.db.transaction(() => {
       this.db.run("INSERT INTO compaction_requests(id,status,deadline,notice_id,approved) VALUES (?,'waiting',?,?,?)", [message.id, Date.now() + 10 * 60 * 1000, randomUUID(), approved ? 1 : 0]);
       this.db.run("UPDATE messages SET status='compact-waiting' WHERE id=?", [message.id]);
@@ -778,6 +793,11 @@ export class Bridge {
       await this.compactNotice(message, row.notice_id, status, reason);
       for (const pending of this.db.query<Message, []>("SELECT * FROM messages WHERE status='pending' AND kind='message' ORDER BY created_at,rowid").all()) await this.route(pending);
     };
+    const waiting = async (reason: string, resetQuiet = true) => {
+      if (!this.db.run(`UPDATE compaction_requests SET reason=?,quiet_since=CASE WHEN ? THEN NULL ELSE quiet_since END
+        WHERE id=? AND status='waiting'`, [reason, resetQuiet ? 1 : 0, row.id]).changes) return;
+      await this.compactProgress(message, 'waiting', reason, row.deadline);
+    };
     try {
       const peer = message.peer_address ? findPeerProcess(this.configDir, message.peer_address, message.peer_start) : null;
       if (!peer || peer.sessionId !== message.peer_id || !this.compactAccess.allows(message.peer_id) || this.policy() === 'refuse' || this.policy() === 'hold' || !row.approved && this.decision(message) !== 'accept') {
@@ -785,15 +805,19 @@ export class Bridge {
       }
       if (Date.now() >= row.deadline) { await finish(row.status === 'waiting' ? 'expired' : 'unknown', 'Compaction deadline reached; no automatic resubmission'); return; }
       const observation = await readCompactions(this.target(), this.threadId);
-      if (observation.runtime.mode === 'unknown') return;
+      if (observation.runtime.mode === 'unknown') { await waiting('permissions_unknown: waiting for known native permissions'); return; }
       if (!row.approved && this.decision(message, observation.runtime.mode) !== 'accept') { await finish('refused', 'Native permission mode changed before compaction'); return; }
       if (row.status === 'waiting') {
-        if (observation.runtime.status !== 'idle' || observation.running.length || this.incomingMessages || this.unreadCount()) {
-          this.db.run('UPDATE compaction_requests SET quiet_since=NULL WHERE id=?', [row.id]); return;
-        }
-        if (row.quiet_since === null) { this.db.run('UPDATE compaction_requests SET quiet_since=? WHERE id=?', [Date.now(), row.id]); return; }
-        if (Date.now() - row.quiet_since < 1000) return;
         await this.syncInputs();
+        if (observation.runtime.status === 'unknown') { await waiting('native_state_unavailable: waiting for known native runtime'); return; }
+        if (observation.runtime.status !== 'idle') { await waiting('recipient_busy: waiting for the current turn to end'); return; }
+        if (observation.running.length) { await waiting('compaction_running: waiting for an existing native compaction'); return; }
+        if (this.incomingMessages || this.unreadCount()) { await waiting('unread_input: waiting for bridge input to be consumed'); return; }
+        if (row.quiet_since === null) {
+          this.db.run('UPDATE compaction_requests SET quiet_since=? WHERE id=?', [Date.now(), row.id]);
+          await waiting('quiet_period: waiting for a stable idle boundary', false); return;
+        }
+        if (Date.now() - row.quiet_since < 1000) return;
         if (!this.budget.reserve(row.notice_id)) { await finish('refused', 'Automatic send budget exhausted; compaction was not dispatched'); return; }
         this.db.run("INSERT OR IGNORE INTO messages(id,peer_id,direction,text,status,peer_address,peer_start,kind,parent_message_id) VALUES (?,?,'out','','compact-notice-reserved',?,?,'compact-result',?)",
           [row.notice_id, message.peer_id, message.peer_address, message.peer_start, row.id]);
@@ -802,10 +826,12 @@ export class Bridge {
         try {
           if (!await compactCodex(this.target(), this.threadId, observation.runtime.mode)) {
             this.budget.refund(row.notice_id);
-            this.db.run("UPDATE compaction_requests SET status='waiting',quiet_since=NULL WHERE id=?", [row.id]); return;
+            this.db.run("UPDATE compaction_requests SET status='waiting',quiet_since=NULL WHERE id=?", [row.id]);
+            await waiting('recipient_changed: native state changed before dispatch'); return;
           }
-          this.db.run("UPDATE compaction_requests SET status='submitted' WHERE id=?", [row.id]);
+          this.db.run("UPDATE compaction_requests SET status='submitted',reason=NULL WHERE id=?", [row.id]);
           this.db.run("UPDATE messages SET status='compact-submitted' WHERE id=?", [row.id]);
+          await this.compactProgress(message, 'submitted', 'Native compact accepted; wait for compact_result/completed before sending work', row.deadline);
         } catch {
           await finish('unknown', 'Native compact outcome is unknown; it will not be resubmitted');
         }
@@ -819,25 +845,39 @@ export class Bridge {
     } catch {
       // Waiting requests can wait through read-only transport failure. A dispatched
       // request is never sent a second time; timeout produces an unknown outcome.
+      if (row.status === 'waiting') await waiting('native_state_unavailable: waiting for a readable native snapshot');
     } finally { this.scheduleCompaction(); }
   }
 
-  private async compactNotice(message: Message, noticeId: string, status: string, reason: string) {
+  private async compactProgress(message: Message, phase: 'waiting' | 'submitted', reason: string, deadline: number) {
+    try {
+      this.db.run('INSERT OR IGNORE INTO compact_notices VALUES (?,?,?)', [message.id, phase, randomUUID()]);
+      const notice = this.db.query<{ notice_id: string }, [string, string]>(
+        'SELECT notice_id FROM compact_notices WHERE request_id=? AND phase=?').get(message.id, phase)!;
+      await this.compactNotice(message, notice.notice_id, phase, reason, { progress: true, deadline, spareResult: true });
+    } catch { /* Optional progress must not change the native operation's outcome. */ }
+  }
+
+  private async compactNotice(message: Message, noticeId: string, status: string, reason: string,
+    options: { progress?: boolean; deadline?: number; pendingRequestId?: string; spareResult?: boolean } = {}) {
     const old = this.db.query<{ status: string }, [string]>('SELECT status FROM messages WHERE id=?').get(noticeId);
     if (old && old.status !== 'compact-notice-reserved') return;
     try {
       const peer = findPeerProcess(this.configDir, message.peer_address!, message.peer_start);
       if (peer.sessionId !== message.peer_id) return;
       await this.syncInputs();
-      if (!this.budget.reserve(noticeId)) return;
-      const text = JSON.stringify({ event: 'compact_result', requestId: message.id, status, detail: reason });
+      // Progress and duplicate replies leave at least one slot for the final result.
+      if (!this.budget.reserve(noticeId, options.spareResult ? 1 : 0)) return;
+      const text = JSON.stringify({ event: options.progress ? 'compact_status' : 'compact_result', requestId: message.id,
+        status, detail: reason, deadline: options.deadline, pendingRequestId: options.pendingRequestId });
+      const kind = options.progress ? 'compact-status' : 'compact-result';
       const receiver = this.receiver();
       const short = hopChain(message.text);
       const frame = userFrame(peer, peerAddress(receiver.messagingSocketPath), receiver.name, this.threadId,
         noticeId, text, this.runtime().mode, this.ownHop(), short, 'steer',
         message.local_chain ? { fullChain: message.local_chain.split(','), secret: this.budget.secret(), replaceLast: true } : undefined);
-      this.db.run("INSERT INTO messages(id,peer_id,direction,text,status,peer_address,peer_start,kind,parent_message_id) VALUES (?,?,'out',?,'submitting',?,?,'compact-result',?) ON CONFLICT(id) DO UPDATE SET text=excluded.text,status='submitting'",
-        [noticeId, message.peer_id, text, message.peer_address, message.peer_start, message.id]);
+      this.db.run("INSERT INTO messages(id,peer_id,direction,text,status,peer_address,peer_start,kind,parent_message_id) VALUES (?,?,'out',?,'submitting',?,?,?,?) ON CONFLICT(id) DO UPDATE SET text=excluded.text,status='submitting'",
+        [noticeId, message.peer_id, text, message.peer_address, message.peer_start, kind, message.id]);
       try {
         if (!await this.writePeer(peer, [frame])) throw new SendRefused('Receiver stopped before notification write');
         this.db.run("UPDATE messages SET status='socket-written' WHERE id=?", [noticeId]);

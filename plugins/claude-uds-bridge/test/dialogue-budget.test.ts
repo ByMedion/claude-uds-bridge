@@ -50,3 +50,16 @@ test('independent MCP processes share exactly 100 reservations', async () => {
     expect(budget.status().used).toBe(100);
   } finally { for (const child of children) child.kill(); db.close(); rmSync(root, { recursive: true }); }
 });
+
+
+test('optional progress leaves a final send available and reservations remain shared', () => {
+  const db = new Database(':memory:');
+  try {
+    const budget = new DialogueBudget(db);
+    for (let i = 0; i < 99; i++) expect(budget.reserve(`progress-${i}`, 1)).toBe(true);
+    expect(budget.reserve('extra-progress', 1)).toBe(false);
+    expect(budget.reserve('final-result')).toBe(true);
+    expect(budget.reserve('final-result')).toBe(true);
+    expect(budget.status().used).toBe(100);
+  } finally { db.close(); }
+});
