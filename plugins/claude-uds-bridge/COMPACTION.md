@@ -1,6 +1,12 @@
 # Claude-requested context compaction
 
-The feature is disabled by default. In each receiving Codex chat, call `compact_access`, select a live Claude session, and approve **Allow compact requests** in the human dialog. Cancel changes nothing. The grant belongs only to this Codex thread and survives receiver restart; another thread, including a fork, starts without the grant. Revoke it through the same dialog.
+Compact is disabled by default. Open `compact_access` to choose one setting in the human dialog; cancel changes nothing.
+
+- **Allow / Revoke in this chat** changes an individual Claude session grant. Grants survive receiver restart and stay in this thread's database. Another chat or fork starts without individual grants. Inactive sessions can still be revoked.
+- **Full trust** allows any authenticated local Claude session to request compact in every active Codex chat in this CODEX_HOME profile, including future chats with a receiver. It applies to receivers 0.2.10 or later; update older receivers before expecting them to use it.
+- **Use individual chat grants** disables full trust across the profile and restores the individually stored grants. It does not erase them.
+
+The shared setting is `plugin-state/claude-uds-bridge/compact-policy.json` under CODEX_HOME. The human dialog writes it atomically with mode 0600 in the private state directory. Receivers read it at admission and on every waiting poll, so enabling/revoking it takes effect without restarting updated receivers. Missing settings mean per-chat mode; malformed/untrusted settings fail closed. The setting does not start absent receivers or discover blank chats. Peer text and tool arguments cannot grant either kind of access.
 
 Claude uses its existing native `SendMessage` with exactly this standalone text:
 
@@ -12,7 +18,7 @@ This is a dedicated bridge operation. Ordinary `/compact` text and messages with
 
 ## Execution and completion
 
-The bridge applies the existing inbox/permission policy, duplicate/hop/rate checks and the per-chat grant. A permission mismatch can hold the request for the normal human review. Approval of that one held request does not grant another peer or chat compact access. Explicit hold/refuse or revocation before dispatch stops the operation.
+The bridge applies the existing inbox/permission policy, duplicate/hop/rate checks and the selected compact-access policy. Full trust changes only the compact grant check: it never grants ordinary-message or Codex execution permissions, includes no Codex peer, and still requires socket authentication. A permission mismatch can hold the request for the normal human review. Approval of that one held request does not grant another peer or chat compact access. Explicit hold/refuse or revocation before dispatch stops the operation.
 
 One request can wait at a time, for at most ten minutes. `status.compactions[].reason` reports the current waiting reason, including recipient_busy, unread_input, compaction_running, permissions_unknown, quiet_period or native_state_unavailable. It waits for known native permissions, no in-progress compaction, consumed bridge input and an idle period of at least one second. A fresh snapshot on the same owner connection is checked again immediately before native dispatch. While native compaction is submitted, subsequent bridge text waits rather than steering into the compaction task.
 
@@ -24,7 +30,7 @@ A guard-admitted duplicate from an authenticated, granted sender receives a `com
 
 A final `compact_result` message includes the original request message ID and status (`completed`, `refused`, `expired`, or `unknown`). Claude must wait for completed before assigning the next job in that chat. For unknown, inspect status rather than sending another compact request. A refused unauthenticated/ungranted request receives a refusal receipt; it does not start an unsolicited model turn in Claude. Notifications themselves remain subject to transport failure and sender limits.
 
-`status.compactions` retains recent operation states/reasons; `status.compactAccess` lists allowed Claude session IDs. `list_sessions.supportsCompactRequests` advertises protocol support, not permission. The automatically attached guide is revision 4, so an existing Claude session receives the new usage instructions on its next ordinary authorized bridge message.
+`status.compactions` retains recent operation states/reasons; `status.compactAccess` lists individual Claude session grants; `status.compactAccessMode` is per-chat or all-claude (profile-wide). `list_sessions.supportsCompactRequests` advertises protocol support, not permission. The automatically attached guide is revision 5, so an existing Claude session receives the new usage instructions on its next ordinary authorized bridge message.
 
 ## Budget and lifecycle
 

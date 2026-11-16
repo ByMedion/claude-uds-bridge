@@ -11,7 +11,7 @@ import { PeerGuard } from './guard';
 import { version } from './version';
 import { withDeliveryHelp } from './delivery-help';
 import { DialogueBudget } from './dialogue';
-import { CompactAccess } from './compact-access';
+import { CompactAccess, type CompactAccessMode } from './compact-access';
 import { compactMarker } from './compact';
 
 type Message = { id: string; peer_id: string; direction: string; text: string; status: string; turn_id: string | null;
@@ -116,7 +116,7 @@ export class Bridge {
     }).immediate();
     this.guard = new PeerGuard(this.db);
     this.budget = new DialogueBudget(this.db);
-    this.compactAccess = new CompactAccess(this.db);
+    this.compactAccess = new CompactAccess(this.db, join(stateDir, 'compact-policy.json'));
     this.db.exec(`CREATE TABLE IF NOT EXISTS compaction_requests (
       id TEXT PRIMARY KEY, status TEXT NOT NULL, deadline INTEGER NOT NULL, quiet_since INTEGER,
       baseline TEXT, started_at INTEGER, notice_id TEXT NOT NULL, reason TEXT, approved INTEGER NOT NULL DEFAULT 0
@@ -720,10 +720,22 @@ export class Bridge {
   }
 
   setCompactAccess(sessionId: string, allow: boolean) {
-    const peer = findPeer(this.configDir, sessionId);
-    if (peer.entrypoint === 'codex-claude-uds-bridge') throw new Error('Choose a Claude session for compact access');
+    if (allow) {
+      const peer = findPeer(this.configDir, sessionId);
+      if (peer.entrypoint === 'codex-claude-uds-bridge') throw new Error('Choose a Claude session for compact access');
+    }
     this.compactAccess.set(sessionId, allow);
     this.scheduleCompaction();
+  }
+
+  setCompactAccessMode(mode: CompactAccessMode) {
+    this.compactAccess.setMode(mode);
+    this.scheduleCompaction();
+  }
+
+  private compactAllowed(message: Message, peer: Peer | undefined) {
+    return !!message.local_verified && !!peer && peer.sessionId === message.peer_id
+      && peer.entrypoint !== 'codex-claude-uds-bridge' && this.compactAccess.allows(message.peer_id);
   }
 
   private hasPendingCompact() {
@@ -742,8 +754,11 @@ export class Bridge {
       this.db.run("UPDATE messages SET status='refused',status_reason=? WHERE id=? AND status IN ('pending','held')", [reason, message.id]);
       await this.receipt({ ...message, status_reason: reason }, 'refused');
     };
-    if (!message.local_verified || !this.compactAccess.allows(message.peer_id)) {
-      await refuse('compact_access_required: authenticated Claude needs explicit user permission in this Codex chat'); return;
+    let peer: Peer | undefined;
+    try { if (message.peer_address) peer = findPeerProcess(this.configDir, message.peer_address, message.peer_start); }
+    catch { /* A stale or ambiguous sender cannot use compact access. */ }
+    if (!this.compactAllowed(message, peer)) {
+      await refuse('compact_access_required: authenticated Claude needs a grant in this chat or profile-wide full trust'); return;
     }
     const body = '[bridge:compact]';
     const reason = this.guard.admit(`${message.peer_address}:${message.peer_start ?? ''}`, body, hopChain(message.text), this.ownHop());
@@ -800,7 +815,7 @@ export class Bridge {
     };
     try {
       const peer = message.peer_address ? findPeerProcess(this.configDir, message.peer_address, message.peer_start) : null;
-      if (!peer || peer.sessionId !== message.peer_id || !this.compactAccess.allows(message.peer_id) || this.policy() === 'refuse' || this.policy() === 'hold' || !row.approved && this.decision(message) !== 'accept') {
+      if (!this.compactAllowed(message, peer ?? undefined) || this.policy() === 'refuse' || this.policy() === 'hold' || !row.approved && this.decision(message) !== 'accept') {
         await finish('refused', 'Compact permission, peer identity or inbox policy changed'); return;
       }
       if (Date.now() >= row.deadline) { await finish(row.status === 'waiting' ? 'expired' : 'unknown', 'Compaction deadline reached; no automatic resubmission'); return; }
@@ -894,7 +909,7 @@ export class Bridge {
       receiverStart: this.db.query<{ cwd: string; error: string | null; updated_at: number }, []>('SELECT cwd,error,updated_at FROM receiver_start WHERE singleton=1').get(),
       name: receiver?.name ?? null, replyAddress: receiver ? peerAddress(receiver.messagingSocketPath) : null,
       transport: this.target().kind, transportPath: this.target().path,
-      runtime: this.runtime(), compactAccess: this.compactAccess.list(), compactions: this.compactionStatus(), lifecycle: this.lifecycle(), automaticMessageBudget: this.budget.status(),
+      runtime: this.runtime(), compactAccess: this.compactAccess.list(), compactAccessMode: this.compactAccess.mode(), compactions: this.compactionStatus(), lifecycle: this.lifecycle(), automaticMessageBudget: this.budget.status(),
       inboundPolicy: this.policy(), dialogExpiry: this.dialogExpiry(), heldCount: this.held().length, unreadCount: this.unreadCount(),
       idleRequests: this.db.query<Pick<Subscription, 'id' | 'peer_id' | 'direction'> & { status: string }, [number]>(
         'SELECT id,peer_id,direction,status FROM idle_requests WHERE expires_at>?').all(Date.now()),

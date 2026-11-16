@@ -87,7 +87,7 @@ The record confirms a successful send, not that Claude read or retained the guid
 
 ## Request context compaction from Claude
 
-In each Codex chat, use `compact_access` and approve a selected Claude session in the user dialog. Access is off by default and belongs only to that chat. Claude can then send exactly `[bridge:compact]` with native SendMessage. The bridge waits for a quiet idle boundary and reports `compact_result` separately; Claude should await completed before scheduling another task. Compact does not renew the 100-send budget, and one outgoing result notice counts toward it. See [compaction and native API limits](plugins/claude-uds-bridge/COMPACTION.md).
+Use `compact_access` to allow a selected Claude session in this chat, or enable profile-wide full trust for any authenticated local Claude in all present and future active Codex chats. Access is off by default. Full trust applies to receivers 0.2.10+; switching back to per-chat mode preserves individual grants. The existing inbox, authentication and idle checks still apply. Claude can then send exactly `[bridge:compact]` with native SendMessage. The bridge waits for a quiet idle boundary and reports `compact_result` separately; Claude should await completed before scheduling another task. Compact does not renew the 100-send budget, and one outgoing result notice counts toward it. See [compaction and native API limits](plugins/claude-uds-bridge/COMPACTION.md).
 
 ## Diagnose and recover a receiver
 
@@ -121,7 +121,7 @@ The sender sees Claude's status notices, among them `held`, `delivered`, `denied
 | `status` | Show the receiver and recent transport outcomes. |
 | `diagnose` | Show versions, startup errors, and transport reachability without submitting input. |
 | `recover_receiver` | Restore this current chat receiver after native context and hook-trust checks. |
-| `compact_access` | Ask the human to allow or revoke one Claude session compact access in this chat. |
+| `compact_access` | Open human settings for individual chat grants or profile-wide full trust for compact. |
 | `inbox` | Open a dialog where you set the receive policy and hold expiry, or review the oldest held message. |
 
 ## Limits

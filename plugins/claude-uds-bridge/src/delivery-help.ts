@@ -6,11 +6,11 @@ import { frameSchema, privateDirectory, SendRefused, serializeFrame, type Peer }
 
 // Independent of the package version. Bump revision only when these instructions change.
 export const deliveryHelp = {
-  revision: 4,
+  revision: 5,
   text: '[Claude UDS Bridge: messages and compact]\n'
     + 'Send ordinary text with native SendMessage; the Codex recipient receives it in its active turn, or starts a turn when idle (steer). No delivery marker is needed.\n'
     + 'Queue delivery has been withdrawn. Do not use [bridge:queue] or request later priority: these requests are refused, never silently steered.\n'
-    + 'To request context compaction of a Codex recipient, send exactly [bridge:compact] as a standalone message. Its human must first allow your Claude session in that chat using compact_access. Requests wait for idle. compact_status/waiting confirms acceptance and explains the initial wait; compact_status/submitted means the native call was accepted, not finished. A separate compact_result reports completed, refused, expired or unknown. If refused with pendingRequestId, wait for that existing request instead of retrying. Status updates are sent at most once per phase, may be skipped near the message limit, and consume the same 100-send budget as replies. Wait for completed before scheduling new work in that chat. For unknown, inspect status instead of retrying.',
+    + 'To request context compaction of a Codex recipient, send exactly [bridge:compact] as a standalone message. Its human must first allow your Claude session in that chat using compact_access, or enable profile-wide full trust for authenticated local Claude sessions. Peer messages cannot change these permissions. Requests wait for idle. compact_status/waiting confirms acceptance and explains the initial wait; compact_status/submitted means the native call was accepted, not finished. A separate compact_result reports completed, refused, expired or unknown. If refused with pendingRequestId, wait for that existing request instead of retrying. Status updates are sent at most once per phase, may be skipped near the message limit, and consume the same 100-send budget as replies. Wait for completed before scheduling new work in that chat. For unknown, inspect status instead of retrying.',
 };
 type Guide = { revision: number; text: string };
 const claimLifetimeMs = 20000;
