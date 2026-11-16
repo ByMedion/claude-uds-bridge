@@ -1,11 +1,15 @@
 ---
 name: codex-claude-bridge
-description: Use Claude UDS Bridge to ping or coordinate with an existing Claude Code or Claude Desktop session from Codex, including recovery when this chat has no active receiver.
+description: Use Claude UDS Bridge to ping or coordinate with an existing Claude Code or Claude Desktop session from Codex, including recovery when this chat has no active receiver. For Codex-to-Codex coordination, use native Codex chat tools.
 ---
 
 # Connect Codex to Claude
 
-1. Call `list_sessions` and `status` on `claude_uds_bridge`. Identify the intended peer by session ID, title and project. If several sessions fit, get the intended title or ID before sending.
+Use the bridge for communication between Codex and Claude. For communication with another **Codex chat**, use native `list_threads`, `read_thread`, `wait_threads`, and `send_message_to_thread` instead. Discover these tools by name if they are deferred; if they cannot reach the target, report that limitation rather than automatically routing through the bridge.
+
+Codex entries in the bridge's `list_sessions` exist so **Claude** can discover and address their receivers. They do not make the bridge the route for Codex-to-Codex messages. Keep those receivers registered for Claude; this rule changes the sending agent's tool choice, not receiver registration or permissions.
+
+1. Call `list_sessions` and `status` on `claude_uds_bridge`. Identify the intended Claude peer by session ID, title and project. If several sessions fit, get the intended title or ID before sending.
 2. If `replyAddress` is present, send the authorized message to that peer with `send_message`. `socket-written` confirms a write to the peer socket. An incoming reply confirms the round trip. Check `status` before retrying an unknown outcome. If a reply is held, follow the bridge's inbox review flow.
 3. If `replyAddress` is null, use `diagnose`, then `recover_receiver`. Fork 0.2.7 or later also restores an inactive lifecycle after native context and hook-trust checks. Check `status` afterward. If the hook requires review, the human reviews it in Codex; recovery does not trust it. For unavailable tooling or an unsupported context, use the trusted manual SessionStart procedure below.
 

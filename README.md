@@ -143,7 +143,7 @@ Fork 0.2.6 supports native Claude local-chain compaction for authenticated local
 ## Skills
 
 - [bridge-compact-access](plugins/claude-uds-bridge/skills/bridge-compact-access/SKILL.md) is bundled with the plugin and opens the compact-permissions form from the `/` skill menu.
-- [codex-claude-bridge](skills/codex-claude-bridge/SKILL.md) is the versioned companion skill for session messaging, diagnosis and receiver recovery, including its supporting reference. To install it as a personal Codex skill, copy that whole folder to `$CODEX_HOME/skills/` (normally `~/.codex/skills/`). It is kept outside the plugin's skill directory to avoid duplicating an existing personal installation.
+- [codex-claude-bridge](skills/codex-claude-bridge/SKILL.md) is the versioned companion skill for messaging Claude, diagnosis and receiver recovery, including its supporting reference. It directs Codex-to-Codex coordination through native Codex chat tools. To install it as a personal Codex skill, copy that whole folder to `$CODEX_HOME/skills/` (normally `~/.codex/skills/`). It is kept outside the plugin's skill directory to avoid duplicating an existing personal installation.
 
 ## Development
 
