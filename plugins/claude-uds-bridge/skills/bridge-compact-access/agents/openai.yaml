@@ -1,4 +1,4 @@
 interface:
   display_name: "Bridge compact access"
   short_description: "Open Claude and Codex compact permission settings"
-  default_prompt: "Use $bridge-compact-access to open the compact permission settings."
+  default_prompt: "Use $claude-uds-bridge:bridge-compact-access to open the compact permission settings."

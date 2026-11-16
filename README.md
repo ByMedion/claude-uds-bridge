@@ -87,7 +87,7 @@ The record confirms a successful send, not that Claude read or retained the guid
 
 ## Request context compaction from Claude
 
-Choose `bridge-compact-access` from the `/` skill menu (or invoke `$bridge-compact-access`) to open compact permissions immediately. This short skill still runs the model; the permission choice stays in the native human dialog. Use `compact_access` to allow a selected Claude session in this chat, or enable profile-wide full trust for any authenticated local Claude in all present and future active Codex chats. Access is off by default. Full trust applies to receivers 0.2.10+; switching back to per-chat mode preserves individual grants. The existing inbox, authentication and idle checks still apply. Claude can then send exactly `[bridge:compact]` with native SendMessage. The bridge waits for a quiet idle boundary and reports `compact_result` separately; Claude should await completed before scheduling another task. Compact does not renew the 100-send budget, and one outgoing result notice counts toward it. See [compaction and native API limits](plugins/claude-uds-bridge/COMPACTION.md).
+Choose `bridge-compact-access` from the `/` skill menu (or invoke `$claude-uds-bridge:bridge-compact-access`) to open compact permissions immediately. This short skill still runs the model; the permission choice stays in the native human dialog. Use `compact_access` to allow a selected Claude session in this chat, or enable profile-wide full trust for any authenticated local Claude in all present and future active Codex chats. Access is off by default. Full trust applies to receivers 0.2.10+; switching back to per-chat mode preserves individual grants. The existing inbox, authentication and idle checks still apply. Claude can then send exactly `[bridge:compact]` with native SendMessage. The bridge waits for a quiet idle boundary and reports `compact_result` separately; Claude should await completed before scheduling another task. Compact does not renew the 100-send budget, and one outgoing result notice counts toward it. See [compaction and native API limits](plugins/claude-uds-bridge/COMPACTION.md).
 
 ## Diagnose and recover a receiver
 
@@ -143,7 +143,7 @@ Fork 0.2.6 supports native Claude local-chain compaction for authenticated local
 ## Skills
 
 - [bridge-compact-access](plugins/claude-uds-bridge/skills/bridge-compact-access/SKILL.md) is bundled with the plugin and opens the compact-permissions form from the `/` skill menu.
-- [codex-claude-bridge](skills/codex-claude-bridge/SKILL.md) is the versioned companion skill for messaging Claude, diagnosis and receiver recovery, including its supporting reference. It directs Codex-to-Codex coordination through native Codex chat tools. To install it as a personal Codex skill, copy that whole folder to `$CODEX_HOME/skills/` (normally `~/.codex/skills/`). It is kept outside the plugin's skill directory to avoid duplicating an existing personal installation.
+- [codex-claude-bridge](plugins/claude-uds-bridge/skills/codex-claude-bridge/SKILL.md) is bundled alongside the compact-permissions skill. It covers the messaging workflow and receiver recovery; tool descriptions carry per-call rules. Technical references are part of the plugin. Machine-specific preferences stay in local guidance.
 
 ## Development
 

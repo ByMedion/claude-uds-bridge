@@ -23,13 +23,11 @@ Consequently, a Codex-only restart while RustRover retains the legacy listener c
 - The corresponding JetBrains implementation was found in `/Applications/Jetbrains/RustRover.app/Contents/plugins/air-plugin/lib/modules/intellij.air.backend.codex.ide.jar`, especially `com.intellij.air.backend.codex.ide.CodexIdeContextIpcService`, `CodexIdeContextIpcProtocol`, `CodexIdeContextIpcTransportKt`, and `CodexIdeContextIpcStartupActivity`. This identifies JetBrains Air specifically; do not assume that disabling AI Assistant's unrelated context options will stop the service.
 - No narrow switch for only this IPC service was found in the inspected module. That is a search result, not proof that no setting can exist elsewhere or in later versions.
 
-## Accepted boundary
+## Recovery boundary
 
-The user does not use JetBrains Air but explicitly wants no interference with RustRover/Air. Keep this as a known bridge limitation unless a solution preserving that boundary is established. Do not disable plugins, change IDE settings, stop/restart RustRover, unlink its live socket, or take over its endpoint as an automatic recovery step.
+Bridge discovery and receiver recovery require a compatible native router. They cannot make an IDE-context endpoint handle Desktop requests or force the app to select another router. Preserve hook trust and permission checks; a successful socket connection alone is insufficient.
 
-Bridge fallback and `recover_receiver` can recover a compatible endpoint and an authorized receiver lifecycle. They cannot turn Air into a Desktop router or force Codex to select a different router. Repeating them does not fix this collision. Do not change hook trust, inbox policy, or permission checks to treat the incompatible endpoint as valid.
-
-An earlier user-assisted sequence of quitting both applications and starting Codex first restored the primary endpoint. It is an operational workaround, not a permanent fix: a later Codex-only restart while Air remains active can reproduce the collision. Closing only the IDE was previously insufficient. Do not prescribe IDE shutdown as the default after the user's decision above.
+Inspect listener ownership with `lsof -nP -U`. Do not stop another application, unlink its live socket or disable its integrations as an automatic repair. Coordinate any restart with the human and follow machine-specific instructions. Repeated receiver restarts do not fix an incompatible router.
 
 ## Future direction, not implemented or verified
 

@@ -29,3 +29,32 @@ For an eligible older receiver, a per-chat expiring upgrade lease serializes rep
 Coordinate replacement between peer messages. Legacy receivers have no atomic admission-pause API: the short socket replacement window does not turn socket-written into acknowledgement. The tool does not replay uncertain messages or a previously refused compact. If stop/start cannot be verified, inspect the reported state before another attempt; it does not force-kill or take over another receiver. Older chats are updated by calling the tool in each affected chat, not by targeting them from a neighboring one.
 
 status distinguishes the stored compactAccessMode from compactReadiness. A human form can save profile-wide permission while an older receiver cannot yet apply it; upgrade that receiver and have Claude issue a fresh compact request. Merely receiving action=accept never proves receiver capability or compaction completion.
+
+## Manual trusted-hook fallback
+
+Prefer recover_receiver. Use this only for a supported current chat when normal tooling is unavailable and the installed hook is enabled and trusted. Hook trust is always reviewed by the human in Codex Settings → Hooks / Review hooks.
+
+Confirm the active plugin root and that its current hook implementation uses `dist/hook.js` with a JSON event on stdin. Supply the current workspace directory and the thread ID returned by `status`. Use the normal per-command permission flow if the sandbox restricts local sockets or plugin state.
+
+```bash
+python3 - "$bridge_plugin_root" "$project_dir" "$verified_thread_id" <<'PY'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+plugin_root, project_dir, thread_id = sys.argv[1:]
+if os.environ.get("CODEX_THREAD_ID") != thread_id:
+    raise SystemExit("Current Codex thread ID does not match bridge status")
+
+event = {"session_id": thread_id, "cwd": project_dir, "hook_event_name": "SessionStart"}
+result = subprocess.run(
+    ["bun", str(Path(plugin_root).resolve() / "dist/hook.js")],
+    cwd=plugin_root, input=json.dumps(event), text=True, timeout=20,
+)
+raise SystemExit(result.returncode)
+PY
+```
+
+After the hook exits, check `status` for this exact thread and a non-null `replyAddress`, then send the originally authorized message. If startup still fails, use the actual error to choose the next step; collect diagnostics rather than repeatedly restarting receivers. A working neighboring chat does not establish this chat's lifecycle or registration.

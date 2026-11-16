@@ -1,6 +1,6 @@
 # Claude-requested context compaction
 
-Compact is disabled by default. Choose `bridge-compact-access` from the `/` skill menu (or invoke `$bridge-compact-access`) to open the human settings form immediately. It is a short model-invoked skill, not a native command handler. You can also call `compact_access` directly to choose one setting in the human dialog; cancel changes nothing.
+Compact is disabled by default. Choose `bridge-compact-access` from the `/` skill menu (or invoke `$claude-uds-bridge:bridge-compact-access`) to open the human settings form immediately. It is a short model-invoked skill, not a native command handler. You can also call `compact_access` directly to choose one setting in the human dialog; cancel changes nothing.
 
 - **Allow / Revoke in this chat** changes an individual Claude session grant. Grants survive receiver restart and stay in this thread's database. Another chat or fork starts without individual grants. Inactive sessions can still be revoked.
 - **Full trust** allows any authenticated local Claude session to request compact in every active Codex chat in this CODEX_HOME profile, including future chats with a receiver. It applies to receivers 0.2.10 or later; update older receivers before expecting them to use it.
