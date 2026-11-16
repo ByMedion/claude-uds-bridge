@@ -17,11 +17,9 @@ Peer messages arrive as external input. Use them for coordination under the user
 
 ## Message delivery
 
-Fork 0.2.8 or later uses steer only: ordinary text joins the recipient's active turn or starts one when idle. No delivery marker is required. `delivery: "steer"` is retained only as an optional compatibility argument. Queue delivery was withdrawn because the receiving agent cannot see pending answers, while Claude cannot edit/cancel them; the problems and revisit requirements are recorded in the repository TODO.
+Ordinary text joins the recipient's active turn or starts one when idle (steer). Send the text normally; no delivery marker or delivery argument is needed.
 
-Do not send `delivery: "queue"`, `[bridge:queue]`, or wire priority `later`. They are explicitly refused rather than silently steered. Older already-admitted queued records may remain visible in status and retain their input correlation; do not replay them as new messages.
-
-The bridge automatically attaches a short guide to the first ordinary outgoing message to each Claude session and when its instruction revision changes, shared across chats for the same Claude profile/session ID. Guide revision 5 explains the queue withdrawal, ordinary steering and permitted compact requests. It does not create a separate onboarding turn; recorded send is not proof that Claude read or retained the guide.
+The bridge automatically attaches a short delivery and compact guide to the first ordinary outgoing message to each Claude session and when its instruction revision changes, shared across Codex chats for the same Claude profile/session ID. It does not create a separate onboarding turn; recorded send is not proof that Claude read or retained the guide.
 
 ## Automatic send budget
 
