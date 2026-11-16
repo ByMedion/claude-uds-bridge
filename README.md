@@ -140,6 +140,11 @@ What is missing compared with Claude Code is in [PROTOCOL-COVERAGE.md](plugins/c
 
 Fork 0.2.6 supports native Claude local-chain compaction for authenticated local senders. Each Codex chat has 100 automatic text sends shared across peers and persistent across MCP/receiver restart. A confirmed new human input renews the allowance once; peer replies, tool results and idle notices do not. `status.automaticMessageBudget` shows the remaining allowance. Legacy/unverified peers retain the earlier hop limits. See the [local-dialogue contract and evidence](plugins/claude-uds-bridge/HOP-CHAINS.md).
 
+## Skills
+
+- [bridge-compact-access](plugins/claude-uds-bridge/skills/bridge-compact-access/SKILL.md) is bundled with the plugin and opens the compact-permissions form from the `/` skill menu.
+- [codex-claude-bridge](skills/codex-claude-bridge/SKILL.md) is the versioned companion skill for session messaging, diagnosis and receiver recovery, including its supporting reference. To install it as a personal Codex skill, copy that whole folder to `$CODEX_HOME/skills/` (normally `~/.codex/skills/`). It is kept outside the plugin's skill directory to avoid duplicating an existing personal installation.
+
 ## Development
 
 ```bash
