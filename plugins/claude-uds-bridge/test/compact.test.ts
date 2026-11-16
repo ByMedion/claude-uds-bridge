@@ -78,6 +78,45 @@ test('only exact compact markers and explicit native completion evidence are acc
   expect(state.running).toEqual(['pending']);
 });
 
+test('canonical completion timestamps clear historical compactions without treating a finished turn as item completion', () => {
+  const runtime = { status: 'idle' as const, mode: 'prompting' as const };
+  const state = desktopCompactions({
+    turns: [{ items: [{ id: 'done', type: 'contextCompaction', completed: false }] }],
+    turnHistory: { kind: 'canonical', history: { entitiesByKey: {
+      'turn:old': { status: 'completed', items: [
+        { id: 'done', type: 'contextCompaction', startedAtMs: 1794720607616, completedAtMs: 1794720749119 },
+        { id: 'new', type: 'contextCompaction', completedAtMs: 1794790800000 },
+        ...[null, undefined, 0, -1, '1794720749119', Infinity, NaN].map((value, i) =>
+          ({ id: `unproven-${i}`, type: 'contextCompaction', completedAtMs: value })),
+      ] },
+    } } },
+  }, runtime, '/tmp');
+  expect(state.completed).toEqual(['done', 'new']);
+  expect(state.running).toEqual(Array.from({ length: 7 }, (_, i) => `unproven-${i}`));
+});
+
+test('a completed canonical historical item does not block dispatch and a fresh timestamp proves completion', async () => {
+  const f = await compactFixture();
+  try {
+    f.bridge.setCompactAccess(f.peerId, true);
+    const history = { kind: 'canonical', history: { entitiesByKey: {
+      old: { items: [{ id: 'historical', type: 'contextCompaction', completedAtMs: 1794720749119 }] },
+    } } };
+    f.desktop.setHistory({ turnHistory: history });
+    const id = await f.request();
+    await eventually(() => f.bridge.status().compactions.find(row => row.id === id)?.status === 'submitted', 5000);
+    f.desktop.setHistory({ turnHistory: { ...history, history: { entitiesByKey: {
+      ...history.history.entitiesByKey,
+      fresh: { items: [{ id: f.desktop.compactions[0], type: 'contextCompaction', completedAtMs: Date.now() }] },
+    } } } });
+    f.desktop.setState('idle');
+    await eventually(() => f.bridge.status().compactions.find(row => row.id === id)?.status === 'completed');
+    expect(f.desktop.compactions).toHaveLength(1);
+    await eventually(() => f.frames.some(frame => frame.type === 'user' && frame.message.content.includes('compact_result')));
+    expect(f.frames.filter(frame => frame.type === 'user' && frame.message.content.includes('compact_result'))).toHaveLength(1);
+  } finally { await f.close(); }
+}, 10000);
+
 
 test('revocation, fresh permission mismatch and expired wait prevent native compaction', async () => {
   for (const action of ['revoke', 'permissions', 'expire', 'end'] as const) {

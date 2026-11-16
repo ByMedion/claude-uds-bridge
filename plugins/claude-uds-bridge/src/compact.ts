@@ -2,11 +2,12 @@ import { z } from 'zod';
 import type { Runtime } from './desktop';
 
 export type CompactObservation = { runtime: Runtime; cwd: string; completed: string[]; running: string[] };
-const itemSchema = z.object({ id: z.string(), type: z.string(), completed: z.boolean().optional(), source: z.string().optional() });
+const itemSchema = z.object({ id: z.string(), type: z.string(), completed: z.boolean().optional(), source: z.string().optional(),
+  completedAtMs: z.unknown().optional() });
 const turnSchema = z.object({ items: z.array(itemSchema), completedItemIds: z.record(z.string(), z.boolean()).optional() });
 
-// Desktop provides explicit completed flags for contextCompaction items. A successful
-// RPC response alone is admission, never completion. Unknown layouts stay unknown.
+// Stream items use completed/completedItemIds; canonical history uses completedAtMs.
+// A finished turn alone does not prove that its compaction item completed.
 export function desktopCompactions(state: { turns?: unknown; turnHistory?: unknown }, runtime: Runtime, cwd: string): CompactObservation {
   const turns = z.array(turnSchema).safeParse(state.turns);
   const history = z.object({ kind: z.string(), history: z.object({ entitiesByKey: z.record(z.string(), turnSchema) }).optional() }).safeParse(state.turnHistory);
@@ -15,7 +16,8 @@ export function desktopCompactions(state: { turns?: unknown; turnHistory?: unkno
   const completed = new Set<string>(), running = new Set<string>();
   for (const turn of values) for (const item of turn.items) {
     if (item.type !== 'contextCompaction' || item.source === 'automatic') continue;
-    if (item.completed === true || turn.completedItemIds?.[item.id] === true) completed.add(item.id);
+    const timestampComplete = typeof item.completedAtMs === 'number' && Number.isFinite(item.completedAtMs) && item.completedAtMs > 0;
+    if (item.completed === true || turn.completedItemIds?.[item.id] === true || timestampComplete) completed.add(item.id);
     else running.add(item.id);
   }
   return { runtime, cwd, completed: [...completed], running: [...running].filter(id => !completed.has(id)) };
