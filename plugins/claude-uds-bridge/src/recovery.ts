@@ -101,5 +101,5 @@ export async function prepareRecovery(bridge: Bridge, pluginRoot: string, codexH
   if (validate(fresh) !== cwd || fresh.owner !== context.owner) throw new RecoveryRefused('context_mismatch', 'Thread owner or directory changed during recovery');
   const generation = bridge.activateRecovery(before, cwd);
   bridge.setTarget(target);
-  return { cwd, generation, trust };
+  return { cwd, generation, trust, owner: context.owner };
 }

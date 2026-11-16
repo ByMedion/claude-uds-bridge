@@ -121,6 +121,9 @@ export class Bridge {
       id TEXT PRIMARY KEY, status TEXT NOT NULL, deadline INTEGER NOT NULL, quiet_since INTEGER,
       baseline TEXT, started_at INTEGER, notice_id TEXT NOT NULL, reason TEXT, approved INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE IF NOT EXISTS receiver_upgrade (
+      singleton INTEGER PRIMARY KEY CHECK(singleton=1), token TEXT NOT NULL, expires_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS compact_notices (
       request_id TEXT NOT NULL, phase TEXT NOT NULL, notice_id TEXT NOT NULL,
       PRIMARY KEY(request_id,phase)
@@ -173,6 +176,42 @@ export class Bridge {
     }
     return generation;
   }
+
+  receiverOwner() {
+    return this.db.query<{ pid: number; proc_start: string }, []>('SELECT pid,proc_start FROM receiver WHERE singleton=1').get();
+  }
+
+  receiverUpgradeBlockers() {
+    const blockers: { kind: string; count: number }[] = [];
+    const queries = {
+      input: "SELECT count(*) AS count FROM messages WHERE status IN ('pending','submitting','held') OR awaiting_input=1",
+      subscriptions: "SELECT count(*) AS count FROM idle_requests WHERE status IN ('waiting','submitting','unknown')",
+      compactions: "SELECT count(*) AS count FROM compaction_requests WHERE status IN ('waiting','submitting','submitted')",
+    };
+    for (const [kind, query] of Object.entries(queries)) {
+      const count = this.db.query<{ count: number }, []>(query).get()?.count ?? 0;
+      if (count) blockers.push({ kind, count });
+    }
+    return blockers;
+  }
+
+  claimReceiverUpgrade() {
+    return this.db.transaction(() => {
+      if (this.db.query('SELECT 1 FROM receiver_upgrade WHERE expires_at>?').get(Date.now())) {
+        throw new Error('receiver_upgrade_in_progress: inspect status before another recovery');
+      }
+      const token = randomUUID();
+      this.db.run('INSERT INTO receiver_upgrade VALUES (1,?,?) ON CONFLICT(singleton) DO UPDATE SET token=excluded.token,expires_at=excluded.expires_at', [token, Date.now() + 60000]);
+      return token;
+    }).immediate();
+  }
+  checkReceiverUpgrade(token: string) {
+    if (!this.db.query('SELECT 1 FROM receiver_upgrade WHERE token=? AND expires_at>?').get(token, Date.now())) {
+      throw new Error('receiver_upgrade_lease_lost: inspect status');
+    }
+  }
+  receiverUpgradeActive() { return !!this.db.query('SELECT 1 FROM receiver_upgrade WHERE expires_at>?').get(Date.now()); }
+  releaseReceiverUpgrade(token: string) { this.db.run('DELETE FROM receiver_upgrade WHERE token=?', [token]); }
 
   recordReceiverStart(cwd: string, error: string | null = null) {
     this.db.run('INSERT INTO receiver_start VALUES (1,?,?,?) ON CONFLICT(singleton) DO UPDATE SET cwd=excluded.cwd,error=excluded.error,updated_at=excluded.updated_at',
@@ -289,7 +328,7 @@ export class Bridge {
     return this.db.query<{ hop_token: string | null }, []>('SELECT hop_token FROM runtime WHERE singleton=1').get()?.hop_token ?? null;
   }
 
-  private async syncInputs() {
+  async syncInputs() {
     const awaiting = this.db.query<{ desktop_input_id: string | null }, []>(
       "SELECT desktop_input_id FROM messages WHERE direction='in' AND awaiting_input=1").all()
       .flatMap(message => message.desktop_input_id ? [message.desktop_input_id] : []);
@@ -905,11 +944,18 @@ export class Bridge {
 
   status() {
     const receiver = peers(this.configDir).find(peer => peer.sessionId === this.threadId && peer.entrypoint === 'codex-claude-uds-bridge');
+    const compactMode = this.compactAccess.mode();
     return { threadId: this.threadId, pluginVersion: version, receiverVersion: receiver?.bridgeVersion ?? null,
       receiverStart: this.db.query<{ cwd: string; error: string | null; updated_at: number }, []>('SELECT cwd,error,updated_at FROM receiver_start WHERE singleton=1').get(),
       name: receiver?.name ?? null, replyAddress: receiver ? peerAddress(receiver.messagingSocketPath) : null,
       transport: this.target().kind, transportPath: this.target().path,
-      runtime: this.runtime(), compactAccess: this.compactAccess.list(), compactAccessMode: this.compactAccess.mode(), compactions: this.compactionStatus(), lifecycle: this.lifecycle(), automaticMessageBudget: this.budget.status(),
+      receiverNeedsUpgrade: !!receiver && receiver.bridgeVersion !== version, receiverUpgradeInProgress: this.receiverUpgradeActive(),
+      compactReadiness: { ready: !!receiver?.peerFeatures.includes('compact_request')
+        && (compactMode !== 'all-claude' || receiver.peerFeatures.includes('compact_profile_access') || receiver.bridgeVersion === '0.2.10'),
+        instruction: !receiver ? 'Run diagnose, then recover_receiver'
+          : !receiver.peerFeatures.includes('compact_request') || compactMode === 'all-claude' && !receiver.peerFeatures.includes('compact_profile_access') && receiver.bridgeVersion !== '0.2.10'
+            ? 'This receiver cannot apply compact access; run diagnose, then recover_receiver before a new compact request' : null },
+      runtime: this.runtime(), compactAccess: this.compactAccess.list(), compactAccessMode: compactMode, compactions: this.compactionStatus(), lifecycle: this.lifecycle(), automaticMessageBudget: this.budget.status(),
       inboundPolicy: this.policy(), dialogExpiry: this.dialogExpiry(), heldCount: this.held().length, unreadCount: this.unreadCount(),
       idleRequests: this.db.query<Pick<Subscription, 'id' | 'peer_id' | 'direction'> & { status: string }, [number]>(
         'SELECT id,peer_id,direction,status FROM idle_requests WHERE expires_at>?').all(Date.now()),

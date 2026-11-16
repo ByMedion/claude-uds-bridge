@@ -3,6 +3,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { join } from 'node:path';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { peers } from '../src/claude';
 import { z } from 'zod';
 import { compactFixture } from './compact-fixture';
 
@@ -61,6 +63,15 @@ test('only accepted human selection enables profile trust, even without Claude s
     const enabled = await call();
     expect(enabled.isError).not.toBe(true);
     expect(f.bridge.status().compactAccessMode).toBe('all-claude');
+    const current = peers(f.configDir).find(peer => peer.sessionId === f.desktop.threadId)!;
+    const record = join(f.configDir, 'sessions', `${current.pid}.json`);
+    const registration = readFileSync(record, 'utf8');
+    writeFileSync(record, JSON.stringify({ ...JSON.parse(registration), bridgeVersion: '0.2.9', peerFeatures: ['compact_request'] }));
+    const old = await call();
+    expect(JSON.parse((old.content as { text: string }[])[0]!.text).compactReadiness.ready).toBe(false);
+    expect(f.bridge.status().compactReadiness.ready).toBe(false);
+    writeFileSync(record, registration);
+    expect(f.bridge.status().compactReadiness.ready).toBe(true);
     selection = 'per-chat';
     await call();
     expect(f.bridge.status().compactAccessMode).toBe('per-chat');

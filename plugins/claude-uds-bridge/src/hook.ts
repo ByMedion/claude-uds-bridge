@@ -8,7 +8,7 @@ import { peers, privateDirectory, processStart, uuid } from './claude';
 import { discoverTarget, watchCodex } from './codex';
 
 const eventSchema = z.object({ session_id: uuid, cwd: z.string().refine(isAbsolute),
-  hook_event_name: z.enum(['SessionStart', 'SessionEnd', 'ReceiverRecover']), generation: uuid.optional() });
+  hook_event_name: z.enum(['SessionStart', 'SessionEnd', 'ReceiverRecover']), generation: uuid.optional(), upgrade_token: uuid.optional() });
 const event = eventSchema.parse(JSON.parse(await Bun.stdin.text()));
 const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
 const codexHome = process.env.CODEX_HOME ?? join(homedir(), '.codex');
@@ -51,6 +51,7 @@ async function runReceiver() {
       mkdirSync(directory, { recursive: true, mode: 0o700 });
       privateDirectory(directory);
     }
+    if (event.upgrade_token) bridge.checkReceiverUpgrade(event.upgrade_token);
     await bridge.start(directory, event.cwd, uuid.parse(event.generation));
     if (closing) throw new Error('Codex disconnected during receiver startup');
     if (!process.connected) throw new Error('Session starter disconnected before readiness');
@@ -80,6 +81,10 @@ async function runHook() {
       while (receiver() && Date.now() < deadline) await Bun.sleep(25);
       if (receiver()) throw new Error('Receiver did not stop');
       return;
+    }
+    if (state.receiverUpgradeActive()) {
+      if (!event.upgrade_token) throw new Error('receiver_upgrade_in_progress: startup deferred; no session cleanup performed');
+      state.checkReceiverUpgrade(event.upgrade_token);
     }
     const active = receiver();
     if (active) {

@@ -43,7 +43,7 @@ export async function discoverDesktopTarget(paths: string[], threadId: string): 
       unavailable.push(`${path} (${error.code})`);
     }
   }
-  throw new Error(`No reachable Desktop IPC socket: ${unavailable.join(', ')}. Check socket ownership and the trusted SessionStart hook. If Desktop reused an incompatible IDE router, quit both apps and start Codex first.`);
+  throw new Error(`No reachable Desktop IPC socket: ${unavailable.join(', ')}. Check socket ownership and the trusted SessionStart hook. If Desktop reused an incompatible IDE router, inspect listener ownership and IPC-TROUBLESHOOTING.md; do not automatically stop the IDE or unlink its live socket.`);
 }
 
 export async function watchCodex(target: Target, threadId: string, onState: (state: Runtime) => void, onDisconnect: () => void) {

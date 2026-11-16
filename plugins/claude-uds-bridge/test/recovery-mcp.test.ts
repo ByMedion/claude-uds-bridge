@@ -59,6 +59,22 @@ for await (const line of createInterface({input:process.stdin})) {
     expect(peers(configDir).find(peer => peer.sessionId === desktop.threadId)?.pid).toBe(owner);
     expect(readFileSync(methods, 'utf8').trim().split('\n')).toEqual(['initialize', 'hooks/list']);
     expect(desktop.submissions).toHaveLength(0);
+    // A real detached receiver with an old advertised version must not be
+    // stopped while it has held work, then upgrades through the same MCP tool.
+    const record = join(configDir, 'sessions', `${owner}.json`);
+    const registration = JSON.parse(readFileSync(record, 'utf8'));
+    writeFileSync(record, JSON.stringify({ ...registration, bridgeVersion: '0.2.9' }));
+    const blocked = await call();
+    expect(JSON.stringify(blocked)).toContain('upgrade_blocked');
+    expect(peers(configDir).find(peer => peer.sessionId === desktop.threadId)?.pid).toBe(owner);
+    db.run("UPDATE messages SET status='refused' WHERE id=?", [held]); // Fixture human-review outcome.
+    const upgraded = await call();
+    expect(upgraded.isError).not.toBe(true);
+    expect(JSON.stringify(upgraded)).toContain('upgraded');
+    expect(peers(configDir).find(peer => peer.sessionId === desktop.threadId)?.pid).not.toBe(owner);
+    expect(db.query('SELECT used FROM dialogue_budget').get()).toEqual({ used: 99 });
+    expect(db.query('SELECT status,expires_at FROM messages WHERE id=?').get(held)).toEqual({ status: 'refused', expires_at: deadline });
+    expect(desktop.submissions).toHaveLength(0);
   } finally {
     await client.close();
     for (const peer of peers(configDir)) if (peer.sessionId === desktop.threadId) process.kill(peer.pid, 'SIGTERM');

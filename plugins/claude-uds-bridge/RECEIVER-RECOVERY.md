@@ -1,6 +1,6 @@
 # Receiver recovery
 
-`recover_receiver {}` is bound to the current MCP caller's thread ID. Existing live receivers are returned unchanged. For an absent receiver, the bridge verifies the native owner, absolute canonical cwd and known runtime/permissions, reads the enabled trusted SessionStart hook, and rechecks owner/cwd before changing its lifecycle.
+`recover_receiver {}` is bound to the current MCP caller's thread ID. A receiver matching the loaded MCP version is returned unchanged. An older live receiver can be replaced through the same tool; no target ID, PID or path can be supplied by the caller. For an absent receiver, the bridge verifies the native owner, absolute canonical cwd and known runtime/permissions, reads the enabled trusted SessionStart hook, and rechecks owner/cwd before changing its lifecycle.
 
 Inactive and absent lifecycle records can be restored without invoking the ordinary new-session cleanup. Held messages, original deadlines, input mappings, inbox policy, peer guard and the 100-send budget survive. The receiver rechecks held input using fresh permissions; recovery does not approve a held message. Messages whose current policy permits delivery can proceed normally, and elapsed deadlines still expire.
 
@@ -19,3 +19,13 @@ A genuine user instruction can authorize the documented manual installed-hook pr
 Tests cover inactive recovery preserving held input and budget, owner/cwd changes, unknown permissions, disabled/modified/untrusted hooks, invalidated generations, idempotent MCP recovery, read-only hook-reader methods and incompatible routers. The selected native context remains local and bound to the MCP caller; callers cannot supply another thread ID or arbitrary cwd to recovery.
 
 The native SessionStart matcher covers `startup`, `resume`, `clear`, `fork` and `compact`. Repeated startup/compaction events reuse an already registered receiver rather than clearing its state. A fork gets its own thread ID and receiver. Changes to hook definitions/content follow the normal Codex trust review flow.
+
+## Updating an older receiver
+
+Run diagnose, then recover_receiver in the affected chat. The tool reads native consumed inputs, reports upgrade_blocked when held/unread/pending messages, active idle subscriptions or compact operations remain, and leaves the process unchanged. Finish/review that work first. Unknown or newer receiver versions are not automatically replaced; refresh MCP rather than downgrading.
+
+For an eligible older receiver, a per-chat expiring upgrade lease serializes replacements. The bridge verifies the native owner, cwd, known permissions, trusted enabled hook, registry and SQLite owner, and PID/start-time; after a short quiet interval it repeats the checks immediately before SIGTERM. It waits for that exact receiver to withdraw, then verifies the lifecycle/native context and invokes the trusted ReceiverRecover hook. The hook is bound to the generation and upgrade lease. SessionEnd invalidates the generation; competing startup is deferred. No grants, policy, message IDs, rate guard, budget or input provenance are rewritten to enable recovery.
+
+Coordinate replacement between peer messages. Legacy receivers have no atomic admission-pause API: the short socket replacement window does not turn socket-written into acknowledgement. The tool does not replay uncertain messages or a previously refused compact. If stop/start cannot be verified, inspect the reported state before another attempt; it does not force-kill or take over another receiver. Older chats are updated by calling the tool in each affected chat, not by targeting them from a neighboring one.
+
+status distinguishes the stored compactAccessMode from compactReadiness. A human form can save profile-wide permission while an older receiver cannot yet apply it; upgrade that receiver and have Claude issue a fresh compact request. Merely receiving action=accept never proves receiver capability or compaction completion.

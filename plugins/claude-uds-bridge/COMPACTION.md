@@ -30,7 +30,7 @@ A guard-admitted duplicate from an authenticated, granted sender receives a `com
 
 A final `compact_result` message includes the original request message ID and status (`completed`, `refused`, `expired`, or `unknown`). Claude must wait for completed before assigning the next job in that chat. For unknown, inspect status rather than sending another compact request. A refused unauthenticated/ungranted request receives a refusal receipt; it does not start an unsolicited model turn in Claude. Notifications themselves remain subject to transport failure and sender limits.
 
-`status.compactions` retains recent operation states/reasons; `status.compactAccess` lists individual Claude session grants; `status.compactAccessMode` is per-chat or all-claude (profile-wide). `list_sessions.supportsCompactRequests` advertises protocol support, not permission. The automatically attached guide is revision 6, so an existing Claude session receives the new usage instructions on its next ordinary authorized bridge message.
+`status.compactions` retains recent operation states/reasons; `status.compactAccess` lists individual Claude session grants; `status.compactAccessMode` is per-chat or all-claude (profile-wide). `compactReadiness` reports whether the current receiver can apply the saved policy; action=accept from the human form only means the setting was saved. An incompatible older receiver must be upgraded before Claude sends a new request. `list_sessions.supportsCompactRequests` advertises protocol support, not permission. The automatically attached guide is revision 6, so an existing Claude session receives the new usage instructions on its next ordinary authorized bridge message.
 
 ## Budget and lifecycle
 
