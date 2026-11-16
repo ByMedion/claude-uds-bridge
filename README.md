@@ -147,14 +147,28 @@ Fork 0.2.6 supports native Claude local-chain compaction for authenticated local
 
 ## Development
 
+Install dependencies once in the package directory:
+
 ```bash
 cd plugins/claude-uds-bridge
 bun install --frozen-lockfile
-bun run check
-bun test
-bun run build
-bun run test:native
 ```
+
+The root [AGENTS.md](AGENTS.md) records the development workflow and known mistakes. From the repository root:
+
+```bash
+bun scripts/check.ts docs
+bun scripts/check.ts focused test/receiver-upgrade.test.ts test/compact-access-mcp.test.ts
+bun scripts/check.ts release --native
+bun scripts/bump-version.ts patch --dry-run
+bun scripts/verify-installed.ts --host
+```
+
+The scripts derive paths from their own location. From any other working directory, pass the absolute path to the script instead. They use the repository's Bun dependencies; no personal Codex skill or version-specific helper is required.
+
+- `check.ts docs`: whitespace, manifest name/version consistency and packaged skill frontmatter/links. `focused` adds source/developer-script type checks and the explicit test files. `release` runs the existing full suite, compares a temporary build with committed bundles and tests the compiled MCP. `--native` also runs the Codex app-server/local-model-stub harness; without it the script explicitly reports that check as skipped. Checks do not rewrite bundles.
+- `bump-version.ts`: accepts `patch`, `minor`, `major` or an explicit higher `X.Y.Z`. `--dry-run` reports the plan without writing. A real run updates both manifests and builds bundles; a failed build rolls back its manifest edits. Inspect the resulting diff and commit the version separately. The script does not commit, push or install.
+- `verify-installed.ts`: checks the source version in the default CODEX_HOME marketplace cache, or accepts `--installed-root PATH` from the installer. It compares runtime files, skills and references, then opens MCP in a temporary isolated profile. `--host` additionally reports read-only hook metadata for the repository cwd. It does not activate a receiver, change settings or grant hook trust. Check the live chat with MCP status/diagnose separately.
 
 The plugin runs the bundled `dist/server.js` and `dist/hook.js`, and CI fails when they lag `src/`. Run `bun run build` after changing `src/`. Set a new `version` in `package.json` and `.codex-plugin/plugin.json` for every release, because Codex caches an installed plugin by version. `bun run test:native` starts the installed Codex binary in a temporary home with a local model stub. See [Testing](plugins/claude-uds-bridge/PROTOCOL-COVERAGE.md#testing) for its modes and environment variables.
 

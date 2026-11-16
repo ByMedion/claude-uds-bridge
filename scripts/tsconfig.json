@@ -1,0 +1,7 @@
+{
+  "extends": "../plugins/claude-uds-bridge/tsconfig.json",
+  "compilerOptions": {
+    "typeRoots": ["../plugins/claude-uds-bridge/node_modules/@types"]
+  },
+  "include": ["./*.ts"]
+}
