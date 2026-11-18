@@ -8,8 +8,9 @@ import { z } from "zod";
 const requestSchema = z.object({ type: z.string(), requestId: z.string().optional(), method: z.string(), params: z.unknown(), version: z.number().optional() });
 
 type Patch = { op: string; path: (string | number)[]; value: unknown };
+type DesktopState = 'idle' | 'active' | 'systemError';
 
-export async function receiver(state: 'active' | 'idle', dropAcknowledgement = false, endBeforeSteer = false, root = mkdtempSync('/tmp/desktop-test-'), streamVersion = 11) {
+export async function receiver(state: DesktopState, dropAcknowledgement = false, endBeforeSteer = false, root = mkdtempSync('/tmp/desktop-test-'), streamVersion = 11) {
   mkdirSync(join(root, 'ipc'), { mode: 0o700 });
   const path = join(root, 'ipc', 'ipc.sock');
   const threadId = randomUUID();
@@ -110,6 +111,7 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
   await once(server, 'listening');
   chmodSync(path, 0o600);
   return { path, threadId, turnId, submissions, requests, queuedMessages, compactions,
+    loseAcknowledgement() { dropAcknowledgement = true; },
     loseCompactAcknowledgement() { compactFailure = true; },
     completeCompaction() {
       for (const turn of (history.turns ?? []) as { status?: string; items: { type: string; completed?: boolean }[] }[]) {
@@ -128,7 +130,7 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
       if (patchPath) for (const send of announce) send([{ op: 'replace', path: patchPath, value: null }]);
     },
     setPermissions(value: unknown) { permissions = value; for (const send of announce) send(); },
-    setState(value: 'idle' | 'active') { state = value; for (const send of announce) send(); }, close: async () => {
+    setState(value: DesktopState) { state = value; for (const send of announce) send(); }, close: async () => {
     for (const socket of clients) socket.destroy();
     await new Promise<void>(resolve => server.close(() => resolve()));
     rmSync(root, { recursive: true });

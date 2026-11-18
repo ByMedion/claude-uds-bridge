@@ -206,6 +206,47 @@ test('delivered receipts mean a held message was released, ordinary acceptance s
   } finally { await f.close(); }
 });
 
+test('a Desktop systemError produces a correlated refusal before native submission', async () => {
+  const f = await fixture('/tmp/uds-system-error-', 13);
+  try {
+    f.desktop.setState('systemError');
+    const id = await f.message('prompting', 'Original peer input');
+    const callbacks = () => f.frames.filter(frame => frame.type === 'control' && frame.action === 'peer_message_status'
+      && frame.orig_msg_id === id);
+    await until(() => callbacks().length === 1);
+    expect(callbacks()[0]).toMatchObject({
+      status: 'expired', status_detail: 'refused',
+      reason: 'codex_system_error: Codex is in systemError; the message was not submitted.',
+    });
+    expect(f.bridge.status().messages.find(message => message.id === id)).toMatchObject({
+      status: 'refused', turn_id: null,
+      status_reason: 'codex_system_error: Codex is in systemError; the message was not submitted.',
+    });
+    expect(f.bridge.status().unreadCount).toBe(0);
+    expect(f.desktop.submissions).toHaveLength(0);
+
+    f.desktop.setState('idle');
+    const nextId = await f.message('prompting', 'A new peer message in an available chat');
+    await until(() => f.bridge.status().messages.some(message => message.id === nextId && message.status === 'started'));
+    expect(f.desktop.submissions).toHaveLength(1);
+    expect(callbacks()).toHaveLength(1);
+  } finally { await f.close(); }
+});
+
+test('a lost Desktop acknowledgement after submission keeps its correlation and sends no false refusal', async () => {
+  const f = await fixture('/tmp/uds-lost-receipt-', 13);
+  try {
+    f.desktop.loseAcknowledgement();
+    const id = await f.message('prompting', 'Peer input with a lost acknowledgement');
+    await until(() => f.bridge.status().messages.some(message => message.id === id && message.status === 'unknown'));
+    expect(f.desktop.submissions).toHaveLength(1);
+    expect(f.bridge.status().unreadCount).toBe(1);
+    expect(f.bridge.status().messages.find(message => message.id === id)?.input_id).toBe(f.submittedInputId());
+    expect(f.frames.some(frame => frame.type === 'control' && frame.action === 'peer_message_status'
+      && frame.orig_msg_id === id)).toBe(false);
+  } finally { await f.close(); }
+});
+
 test('attachment messages are explicitly refused instead of delivering text with missing files', async () => {
   const f = await fixture();
   try {

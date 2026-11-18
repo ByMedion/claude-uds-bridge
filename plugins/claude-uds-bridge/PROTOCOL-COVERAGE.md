@@ -41,11 +41,11 @@ Receipt statuses:
 
 - `held`: deferred.
 - `denied`: rejected by the receiving user.
-- `expired`: the deadline ended. With `status_detail: "refused"` it means refused.
+- `expired`: the deadline ended. With `status_detail: "refused"` it means refused. When the Desktop snapshot disallows peer input, the receiver sends this refusal with the original message ID and a reason such as `codex_system_error`, and clears the unread reservation. A missing acknowledgement after native submission is an uncertain outcome.
 - `dropped`: a guard dropped it, with a reason.
 - `delivered`: a held message was released. Ordinary acceptance sends no receipt.
 
-A socket write and a receipt are both separate from a model reply.
+A socket write and a receipt are both separate from a model reply. Claude Code 2.1.326 renders a generic refusal notice. Inspect the bridge receiver status for the detailed reason.
 
 ## Parity
 

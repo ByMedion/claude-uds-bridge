@@ -20,7 +20,9 @@ export class SendRefused extends Error {}
 // queue is retained only to recognize/refuse legacy wire and persisted records.
 export type DeliveryMode = 'steer' | 'queue';
 export const queueRemoved = 'Queue delivery was withdrawn; send ordinary text with steer instead. Nothing was queued or steered.';
-export class DeliveryUnsupported extends Error {}
+// The input was never submitted to Codex, so its callback can report a final refusal.
+export class DeliveryNotSubmitted extends Error {}
+export class DeliveryUnsupported extends DeliveryNotSubmitted {}
 const registry = z.object({
   pid: z.number().int().positive(), sessionId: uuid, messagingSocketPath: z.string(),
   name: z.string().default('Claude Code'), cwd: z.string(), status: z.string().default('unknown'),

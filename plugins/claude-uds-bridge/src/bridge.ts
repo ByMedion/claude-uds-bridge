@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
-import { accountReceipt, queueRemoved, DeliveryUnsupported, type DeliveryMode, findPeer, findPeerProcess, hopChain, inbox, localChain, publishPeerKey, messageDelivery, peerAddress, peers, privateDirectory, processStart, register, SendRefused, sendFrames, senderMode, serializeFrame, socketPath, userFrame, uuid, type Frame, type Peer } from './claude';
+import { accountReceipt, queueRemoved, DeliveryNotSubmitted, type DeliveryMode, findPeer, findPeerProcess, hopChain, inbox, localChain, publishPeerKey, messageDelivery, peerAddress, peers, privateDirectory, processStart, register, SendRefused, sendFrames, senderMode, serializeFrame, socketPath, userFrame, uuid, type Frame, type Peer } from './claude';
 import { type Runtime } from './desktop';
 import { deliverToCodex, readCodexInputs, readCodexRuntime, readCompactions, compactCodex, targetSchema, type Target } from './codex';
 import { z } from 'zod';
@@ -819,7 +819,7 @@ export class Bridge {
       this.db.run('UPDATE messages SET status=?,turn_id=? WHERE id=?', [result.status, result.turnId, message.id]);
       if (message.status === 'held') await this.receipt(message, 'delivered');
     } catch (error) {
-      if (error instanceof DeliveryUnsupported) {
+      if (error instanceof DeliveryNotSubmitted) {
         this.db.run("UPDATE messages SET status='refused',awaiting_input=0,status_reason=? WHERE id=?", [error.message, message.id]);
         await this.receipt({ ...message, status_reason: error.message }, 'refused');
       } else {

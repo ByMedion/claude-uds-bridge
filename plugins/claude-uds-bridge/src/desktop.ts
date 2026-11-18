@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { isAbsolute } from 'node:path';
-import { checkSocket, uuid, queueRemoved, DeliveryUnsupported, type DeliveryMode } from './claude';
+import { checkSocket, uuid, queueRemoved, DeliveryNotSubmitted, DeliveryUnsupported, type DeliveryMode } from './claude';
 import { desktopInputs } from './desktop-input';
 import { desktopCompactions } from './compact';
 import { desktopTurnOutcomePatch } from './turn-failure';
@@ -220,7 +220,12 @@ class DesktopConnection {
             imageAttachments: [], workspaceRoots: [state.cwd], commentAttachments: [] },
           responsesapiClientMetadata: {} },
       }, 1);
-    } else throw new Error('Codex task is neither active nor idle');
+    } else {
+      const reason = state.threadRuntimeStatus.type === 'systemError'
+        ? 'codex_system_error: Codex is in systemError; the message was not submitted.'
+        : 'codex_input_unavailable: Codex is neither active nor idle; the message was not submitted.';
+      throw new DeliveryNotSubmitted(reason);
+    }
     const accepted = acceptedSchema.parse(response.result).result;
     return { status, turnId: 'turnId' in accepted ? accepted.turnId : accepted.turn.id };
   }
