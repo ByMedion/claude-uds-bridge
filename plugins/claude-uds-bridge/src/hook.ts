@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { Bridge } from './bridge';
 import { peers, privateDirectory, processStart, uuid } from './claude';
 import { discoverTarget, watchCodex } from './codex';
+import type { TurnFailure } from './turn-failure';
 
 const eventSchema = z.object({ session_id: uuid, cwd: z.string().refine(isAbsolute),
   hook_event_name: z.enum(['SessionStart', 'SessionEnd', 'ReceiverRecover']), generation: uuid.optional(), upgrade_token: uuid.optional() });
@@ -27,6 +28,7 @@ async function runReceiver() {
   let unwatch: (() => void) | undefined;
   let closing = false;
   let ready = false;
+  const earlyFailures: TurnFailure[] = [];
   const close = async () => {
     if (closing) return;
     closing = true;
@@ -38,7 +40,11 @@ async function runReceiver() {
   process.once('disconnect', () => { if (!ready) void close(); });
   try {
     bridge.setTarget(await discoverTarget(ipcPath, event.session_id));
-    unwatch = await watchCodex(bridge.target(), event.session_id, state => bridge.updateRuntime(state), () => { void close(); });
+    unwatch = await watchCodex(bridge.target(), event.session_id, state => bridge.updateRuntime(state), () => { void close(); },
+      failure => {
+        if (ready) void bridge.reportTurnFailure(failure);
+        else earlyFailures.push(failure);
+      });
     const livePeer = peers(configDir)[0];
     let directory = livePeer ? dirname(livePeer.messagingSocketPath)
       : join(process.env.XDG_RUNTIME_DIR ?? process.env.CLAUDE_CODE_TMPDIR ?? '/tmp', 'cc-socks');
@@ -56,6 +62,7 @@ async function runReceiver() {
     if (closing) throw new Error('Codex disconnected during receiver startup');
     if (!process.connected) throw new Error('Session starter disconnected before readiness');
     ready = true;
+    for (const failure of earlyFailures.splice(0)) void bridge.reportTurnFailure(failure);
     process.send?.({ ready: true }, error => { if (error) void close(); });
     process.disconnect?.();
   } catch (error) {

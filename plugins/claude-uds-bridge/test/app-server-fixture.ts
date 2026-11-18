@@ -61,6 +61,7 @@ export async function appServer(root = mkdtempSync('/tmp/codex-app-'), threadId 
   return { path, root, threadId, turnId, submissions, responses,
     setState(value: 'idle' | 'active') { state = value; notify('thread/status/changed', { threadId, status: { type: state } }); },
     setPermissions(value: Record<string, unknown>) { permissions = value; notify('thread/settings/updated', { threadId, threadSettings: value }); },
+    completeTurn(turn: unknown, targetThread = threadId) { notify('turn/completed', { threadId: targetThread, turn }); },
     setItems(value: unknown[]) { items = value; },
     setQueue(value: unknown[]) { queue = value; notify('thread/queue/changed', { threadId }); },
     setLoaded(value: boolean) { loaded = value; },

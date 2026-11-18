@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 const itemSchema = z.object({ type: z.string(), id: z.string(), clientId: z.string().nullable().optional(),
   clientUserMessageId: z.string().nullable().optional(), serverUserMessageId: z.string().nullable().optional() });
-const turnSchema = z.object({ turnId: z.string().nullable().optional(), items: z.array(itemSchema),
+const turnSchema = z.object({ turnId: z.string().nullable().optional(), status: z.string().optional(), items: z.array(itemSchema),
   itemsPagination: z.object({ hasLoadedOldest: z.boolean().optional() }).optional() });
 const historySchema = z.object({ entitiesByKey: z.record(z.string(), turnSchema), islands: z.array(z.object({
   entries: z.array(z.object({ value: z.string() })), olderBoundary: z.object({ status: z.string() }),
@@ -10,7 +10,7 @@ const historySchema = z.object({ entitiesByKey: z.record(z.string(), turnSchema)
 })) });
 
 type Input = { id: string; clientId: string | null; user: boolean };
-export type Inputs = { latest: Input | null | undefined; consumed: Input[] };
+export type Inputs = { latest: Input | null | undefined; consumed: Input[]; activeTurnId?: string };
 
 export function desktopInputs(state: { turns?: unknown; turnHistory?: unknown }): Inputs {
   const tail = z.array(turnSchema).safeParse(state.turns);
@@ -32,6 +32,7 @@ export function desktopInputs(state: { turns?: unknown; turnHistory?: unknown })
     turns = [...canonical, ...turns];
     complete = island.olderBoundary.status === 'exhausted';
   } else if (kind.data.kind !== 'legacy') return unknown;
+  const activeTurnId = turns.findLast(turn => turn.status === 'inProgress')?.turnId;
   const consumed = new Map<string, Input>();
   for (const turn of turns) for (const item of turn.items) {
     if (item.type === 'userMessage') consumed.set(item.id, { id: item.id, clientId: item.clientId ?? null, user: true });
@@ -42,7 +43,7 @@ export function desktopInputs(state: { turns?: unknown; turnHistory?: unknown })
   for (const turn of turns.toReversed()) {
     for (const item of turn.items.toReversed()) {
       if (item.type === 'userMessage' || item.type === 'steered') {
-        return { latest: consumed.get(item.id), consumed: [...consumed.values()] };
+        return { latest: consumed.get(item.id), consumed: [...consumed.values()], ...(activeTurnId && { activeTurnId }) };
       }
     }
     if (turn.itemsPagination?.hasLoadedOldest === false) return { ...unknown, consumed: [...consumed.values()] };

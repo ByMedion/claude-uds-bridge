@@ -14,6 +14,7 @@ import { DialogueBudget } from './dialogue';
 import { CompactAccess, type CompactAccessMode } from './compact-access';
 import { compactMarker } from './compact';
 import { formatPeerInput } from './peer-input';
+import type { TurnFailure } from './turn-failure';
 
 type Message = { id: string; peer_id: string; direction: string; text: string; status: string; turn_id: string | null;
   peer_address: string | null; peer_start: string | null; from_mode: string | null; expires_at: number | null; kind: string;
@@ -128,7 +129,8 @@ export class Bridge {
     CREATE TABLE IF NOT EXISTS compact_notices (
       request_id TEXT NOT NULL, phase TEXT NOT NULL, notice_id TEXT NOT NULL,
       PRIMARY KEY(request_id,phase)
-    )`);
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS turn_failure_once ON messages(turn_id) WHERE kind='turn-failed'`);
   }
 
   private exclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -352,14 +354,76 @@ export class Bridge {
   }
 
   private async outgoingHops() {
-    const { latest } = await this.syncInputs();
+    const { latest, activeTurnId } = await this.syncInputs();
     if (latest === undefined) throw new SendRefused('Cannot determine the current input origin; no message was sent');
     const message = latest ? this.db.query<Message, [string]>(
       "SELECT * FROM messages WHERE direction='in' AND native_input_id=?").get(latest.id) : null;
     return { chain: message?.kind === 'message' ? hopChain(message.text) : [],
       fullChain: message?.local_verified && message.local_chain ? message.local_chain.split(',') : undefined,
       local: !!message?.local_verified,
-      parentInputId: latest?.id ?? null };
+      parentInputId: latest?.id ?? null, activeTurnId: uuid.safeParse(activeTurnId).data };
+  }
+
+  reportTurnFailure(failure: TurnFailure) {
+    return this.exclusive(async () => {
+      const lifecycle = this.lifecycle();
+      if (this.closing || !this.ownsReceiver || !this.registration || !lifecycle?.active) return;
+      if (this.db.query("SELECT 1 FROM messages WHERE kind='turn-failed' AND turn_id=?").get(failure.id)) return;
+      const parent = this.db.query<Pick<Message, 'id' | 'peer_id' | 'peer_address' | 'peer_start' | 'direction' | 'local_chain' | 'text'>
+        & { hop_chain: string | null }, [string]>(`
+        SELECT id,peer_id,peer_address,peer_start,direction,hop_chain,local_chain,text FROM messages
+        WHERE turn_id=? AND kind='message' AND peer_start IS NOT NULL
+          AND ((direction='in' AND local_verified=1 AND status IN ('started','steered','accepted','queued'))
+            OR (direction='out' AND status IN ('socket-written','delivered','held')))
+        ORDER BY rowid DESC LIMIT 1
+      `).get(failure.id);
+      if (!parent?.peer_address) return;
+      const receiver = this.receiver();
+      const text = `${receiver.name} · ${new Date(failure.finishedAt).toISOString()} · turn ${failure.id} ended with status failed (${failure.errorCode}).`;
+      const noticeId = randomUUID();
+      this.db.run(`INSERT INTO messages(id,peer_id,direction,text,status,turn_id,peer_address,peer_start,kind,parent_message_id)
+        VALUES (?,?,'out',?,'not-sent',?,?,?,'turn-failed',?)`,
+        [noticeId, parent.peer_id, text, failure.id, parent.peer_address, parent.peer_start, parent.id]);
+
+      let peer: Peer;
+      try { peer = findPeerProcess(this.configDir, parent.peer_address, parent.peer_start); }
+      catch {
+        this.db.run("UPDATE messages SET status_reason='peer_unavailable' WHERE id=?", [noticeId]);
+        return;
+      }
+      if (peer.sessionId !== parent.peer_id || peer.entrypoint === 'codex-claude-uds-bridge') {
+        this.db.run("UPDATE messages SET status_reason='peer_identity_changed_or_not_claude' WHERE id=?", [noticeId]);
+        return;
+      }
+      const inbound = parent.direction === 'in';
+      const chain = inbound ? hopChain(parent.text) : parent.hop_chain?.split(',').filter(Boolean) ?? [];
+      const frame = userFrame(peer, peerAddress(receiver.messagingSocketPath), receiver.name, this.threadId, noticeId,
+        text, this.runtime().mode, inbound ? this.ownHop() : null, chain, 'steer',
+        inbound && parent.local_chain ? { fullChain: parent.local_chain.split(','), secret: this.budget.secret(), replaceLast: true } : undefined);
+      const reserved = this.db.transaction(() => {
+        if (!this.budget.reserve(noticeId)) {
+          this.db.run("UPDATE messages SET status_reason='automatic_budget_exhausted' WHERE id=?", [noticeId]);
+          return false;
+        }
+        this.db.run("UPDATE messages SET status='submitting' WHERE id=?", [noticeId]);
+        return true;
+      }).immediate();
+      if (!reserved) return;
+      try {
+        if (!await sendFrames(this.configDir, peer, [frame], { canWrite: () => {
+          const current = this.lifecycle();
+          return !this.closing && current?.active === 1 && current.generation === lifecycle.generation;
+        } })) {
+          throw new SendRefused('Receiver stopped before notification write');
+        }
+        this.db.run("UPDATE messages SET status='socket-written' WHERE id=? AND status='submitting'", [noticeId]);
+      } catch (error) {
+        const refused = error instanceof SendRefused;
+        if (refused) this.budget.refund(noticeId);
+        this.db.run("UPDATE messages SET status=?,status_reason=? WHERE id=? AND status='submitting'",
+          [refused ? 'not-sent' : 'unknown', refused ? 'notification_refused' : 'notification_write_uncertain', noticeId]);
+      }
+    }).catch(() => console.error('Turn failure notification handling failed; inspect bridge status.'));
   }
 
   private receiver() {
@@ -371,7 +435,7 @@ export class Bridge {
     return receiver;
   }
 
-  sendMessage(sessionId: string, text?: string, notifyWhenIdle = false, delivery: DeliveryMode = 'steer') {
+  sendMessage(sessionId: string, text?: string, notifyWhenIdle = false, delivery: DeliveryMode = 'steer', turnId?: string) {
     return this.exclusive(async () => {
       await this.expireSubscriptions();
       if (sessionId === this.threadId) throw new Error('Cannot send to this task itself');
@@ -401,8 +465,8 @@ export class Bridge {
           'Automatic message budget exhausted (100 sends). A confirmed new human message in this Codex chat is required; peer messages and receiver restart do not renew it. Nothing sent.');
         if (subscriptionId) this.subscribe(subscriptionId, peer, 'out');
         if (id && text) {
-          this.db.run("INSERT INTO messages (id,peer_id,direction,text,status,peer_address,peer_start,delivery_mode,parent_input_id,hop_chain,local_chain) VALUES (?,?,'out',?,'submitting',?,?,?,?,?,?)",
-            [id, sessionId, text, peerAddress(peer.messagingSocketPath), peer.procStart ?? null, delivery,
+          this.db.run("INSERT INTO messages (id,peer_id,direction,text,status,turn_id,peer_address,peer_start,delivery_mode,parent_input_id,hop_chain,local_chain) VALUES (?,?,'out',?,'submitting',?,?,?,?,?,?,?)",
+            [id, sessionId, text, turnId ?? origin?.activeTurnId ?? null, peerAddress(peer.messagingSocketPath), peer.procStart ?? null, delivery,
               origin?.parentInputId ?? null, messageFrame ? hopChain(messageFrame.message.content).join(',') : null,
               messageFrame?.local_chain ?? null]);
           frames.push(messageFrame);
@@ -965,8 +1029,8 @@ export class Bridge {
       inboundPolicy: this.policy(), dialogExpiry: this.dialogExpiry(), heldCount: this.held().length, unreadCount: this.unreadCount(),
       idleRequests: this.db.query<Pick<Subscription, 'id' | 'peer_id' | 'direction'> & { status: string }, [number]>(
         'SELECT id,peer_id,direction,status FROM idle_requests WHERE expires_at>?').all(Date.now()),
-      messages: this.db.query<Pick<Message, 'id' | 'peer_id' | 'direction' | 'status' | 'turn_id' | 'drop_reason' | 'status_reason' | 'delivery_mode'> & { input_id: string | null }, []>(
-        'SELECT id,peer_id,direction,status,turn_id,drop_reason,status_reason,delivery_mode,desktop_input_id AS input_id FROM messages ORDER BY created_at DESC,rowid DESC LIMIT 20').all() };
+      messages: this.db.query<Pick<Message, 'id' | 'peer_id' | 'direction' | 'status' | 'turn_id' | 'kind' | 'drop_reason' | 'status_reason' | 'delivery_mode'> & { input_id: string | null }, []>(
+        'SELECT id,peer_id,direction,status,turn_id,kind,drop_reason,status_reason,delivery_mode,desktop_input_id AS input_id FROM messages ORDER BY created_at DESC,rowid DESC LIMIT 20').all() };
   }
 
   async close() {

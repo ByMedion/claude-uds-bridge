@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { checkSocket, uuid } from './claude';
 import type { Runtime } from './desktop';
 import type { Inputs } from './desktop-input';
+import { appServerTurnFailure, type TurnFailureHandler } from './turn-failure';
 import { version } from './version';
 
 const statusSchema = z.object({ type: z.string() });
@@ -30,6 +31,7 @@ export class AppServer {
   private stopped = false;
   private disconnectError?: Error;
   private onState?: (state: Runtime) => void;
+  private onTurnFailure?: TurnFailureHandler;
   private refreshing = false;
   private dirty = false;
 
@@ -63,6 +65,11 @@ export class AppServer {
         const settings = z.object({ threadSettings: permissionsSchema }).parse(packet.params);
         this.mode = permissionMode(settings.threadSettings);
         this.settingsReceived = true;
+      }
+      if (packet.method === 'turn/completed' && this.onTurnFailure) {
+        const turn = z.object({ turn: z.unknown() }).safeParse(packet.params).data?.turn;
+        const failure = appServerTurnFailure(turn);
+        if (failure) this.onTurnFailure(failure);
       }
       if (this.onState && ['thread/status/changed', 'thread/settings/updated', 'thread/queue/changed', 'item/completed'].includes(packet.method)) {
         void this.refresh().catch(error => this.disconnect(error));
@@ -135,7 +142,8 @@ export class AppServer {
     return { cwd: thread.cwd, owner: this.threadId, runtime: await this.runtime(), hasExecutionEnvironments: false };
   }
 
-  async observe(onState: (state: Runtime) => void) {
+  async observe(onState: (state: Runtime) => void, onTurnFailure?: TurnFailureHandler) {
+    this.onTurnFailure = onTurnFailure;
     const snapshot = z.object({ thread: threadSchema, approvalPolicy: permissionsSchema.shape.approvalPolicy,
       sandbox: permissionsSchema.shape.sandboxPolicy }).parse(
       await this.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));

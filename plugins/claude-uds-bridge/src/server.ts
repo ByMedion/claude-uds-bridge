@@ -16,11 +16,15 @@ const stateDir = join(codexHome, 'plugin-state', 'claude-uds-bridge');
 let bridge: Bridge | undefined;
 let dialogs: HeldDialogs | undefined;
 
-export function callerThread(meta: Record<string, unknown> | undefined): string {
+function callerTurn(meta: Record<string, unknown> | undefined) {
   let turn: unknown = meta?.['x-codex-turn-metadata'];
   if (typeof turn === 'string') { try { turn = JSON.parse(turn); } catch { turn = undefined; } }
-  const parsed = z.object({ thread_id: uuid }).safeParse(turn);
-  const candidate = parsed.success ? parsed.data.thread_id :
+  return z.object({ thread_id: uuid, turn_id: uuid.optional().catch(undefined) }).safeParse(turn).data;
+}
+
+export function callerThread(meta: Record<string, unknown> | undefined): string {
+  const turn = callerTurn(meta);
+  const candidate = turn ? turn.thread_id :
     meta?.['openai/threadId'] ?? meta?.['openai/thread_id'] ?? meta?.codexThreadId ?? meta?.codex_thread_id ?? meta?.threadId ?? meta?.thread_id;
   return uuid.parse(candidate);
 }
@@ -71,8 +75,8 @@ server.registerTool('list_sessions', { description: 'List live local sessions wi
 server.registerTool('send_message', { description: 'Send authorized ordinary text to a freshly listed Claude session by sessionId. Text joins its active turn or starts one when idle; no marker or delivery argument is needed. socket-written confirms a socket write, not processing; the answer arrives separately and you can continue other work. For unknown, inspect status before any resend; never automatically replay an uncertain message. notify_when_idle alone creates one idle subscription without text; set it once. Batch related text: 100 automatic text sends are shared across recipients and restarts; only a confirmed new human input in this Codex chat renews them. Use native tools for a Codex recipient.',
   inputSchema: { sessionId: uuid, text: z.string().min(1).max(maxLineLength).optional(), notify_when_idle: z.boolean().default(false),
     delivery: z.literal('steer', { error: 'Queue delivery was withdrawn; use steer' }).default('steer').describe('Optional compatibility argument; ordinary text uses steering by default.') }, annotations: { openWorldHint: true } },
-  async ({ sessionId, text, notify_when_idle, delivery }, extra) => result(await current(extra._meta).sendMessage(sessionId, text, notify_when_idle, delivery)));
-server.registerTool('status', { description: 'Inspect this chat receiver, recent message outcomes, held/unread counts, automaticMessageBudget and compact requests. pluginVersion is loaded MCP; receiverVersion is the detached receiver and may differ after an update. If replyAddress is null or versions differ, run diagnose then recover_receiver. compactAccess lists individual grants; compactAccessMode is the stored profile mode; compactReadiness says whether this receiver can apply it. compact_status waiting/submitted are progress; only compact_result completed proves completion. Inspect unknown outcomes without automatically replaying them.',
+  async ({ sessionId, text, notify_when_idle, delivery }, extra) => result(await current(extra._meta).sendMessage(sessionId, text, notify_when_idle, delivery, callerTurn(extra._meta)?.turn_id)));
+server.registerTool('status', { description: 'Inspect this chat receiver, recent message outcomes, held/unread counts, automaticMessageBudget, turn failure notifications and compact requests. pluginVersion is loaded MCP; receiverVersion is the detached receiver and may differ after an update. If replyAddress is null or versions differ, run diagnose then recover_receiver. compactAccess lists individual grants; compactAccessMode is the stored profile mode; compactReadiness says whether this receiver can apply it. compact_status waiting/submitted are progress; only compact_result completed proves completion. Inspect unknown outcomes without automatically replaying them.',
   inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false } },
   async (_args, extra) => result(current(extra._meta).status()));
 server.registerTool('diagnose', { description: 'Diagnose this chat without sending input or changing settings: MCP/receiver versions, startup error, transport reachability and receiver readiness. Run before recover_receiver. Follow the reported action; an IPC router failure cannot be repaired by changing permissions or trusting a hook automatically.',

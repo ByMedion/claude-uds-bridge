@@ -9,6 +9,7 @@ import { isAbsolute } from 'node:path';
 import { checkSocket, uuid, queueRemoved, DeliveryUnsupported, type DeliveryMode } from './claude';
 import { desktopInputs } from './desktop-input';
 import { desktopCompactions } from './compact';
+import { desktopTurnOutcomePatch } from './turn-failure';
 
 const packetSchema = z.object({
   type: z.string(), requestId: z.string().optional(), sourceClientId: z.string().optional(),
@@ -53,6 +54,7 @@ class DesktopConnection {
   private pending = new Map<string, ReturnType<typeof Promise.withResolvers<Packet>>>();
   private snapshotResult?: ReturnType<typeof Promise.withResolvers<Snapshot>>;
   private onState?: (state: Runtime) => void;
+  private onSnapshot?: (state: Snapshot) => void;
   private observed?: Runtime;
   private refreshing = false;
   private dirty = false;
@@ -128,13 +130,15 @@ class DesktopConnection {
     finally { clearTimeout(timer); this.snapshotResult = undefined; }
   }
 
-  async observe(onState: (state: Runtime) => void) {
+  async observe(onState: (state: Runtime) => void, onSnapshot?: (state: Snapshot) => void) {
     this.onState = onState;
+    this.onSnapshot = onSnapshot;
     await this.refresh();
   }
 
   async runtime(): Promise<Runtime> {
     const state = await this.snapshot();
+    this.onSnapshot?.(state);
     return { status: state.threadRuntimeStatus.type === 'idle' ? 'idle'
       : state.threadRuntimeStatus.type === 'active' ? 'busy' : 'unknown',
       mode: permissionMode(state.currentPermissions) };
@@ -261,7 +265,13 @@ class DesktopConnection {
           if (packet.version !== 11 && packet.version !== 13) {
             throw new Error(`Unsupported Desktop stream version: ${packet.version} (supported: 11, 13)`);
           }
-          if (params.change.type === 'snapshot') this.snapshotResult?.resolve(snapshotSchema.parse(params.change.conversationState));
+          if (params.change.type === 'snapshot') {
+            if (this.snapshotResult || this.onSnapshot) {
+              const state = snapshotSchema.parse(params.change.conversationState);
+              if (this.snapshotResult) this.snapshotResult.resolve(state);
+              else this.onSnapshot?.(state);
+            }
+          }
           else if (this.onState && params.change.type === 'patches' && params.change.patches?.some(patch =>
             patch.path.length === 0 || ['threadRuntimeStatus', 'currentPermissions'].includes(String(patch.path[0])))) {
             if (this.observed) {
@@ -280,6 +290,8 @@ class DesktopConnection {
               this.report(state);
             }
             void this.refresh().catch(() => this.socket.destroy());
+          } else if (this.onSnapshot && params.change.type === 'patches' && params.change.patches?.some(patch => desktopTurnOutcomePatch(patch.path))) {
+            void this.refresh().catch(() => this.socket.destroy());
           }
         }
       }
@@ -296,9 +308,10 @@ class DesktopConnection {
   }
 }
 
-export async function watchDesktop(path: string, threadId: string, onState: (state: Runtime) => void, onDisconnect: (error: Error) => void) {
+export async function watchDesktop(path: string, threadId: string, onState: (state: Runtime) => void,
+  onDisconnect: (error: Error) => void, onSnapshot?: (state: Snapshot) => void) {
   const connection = new DesktopConnection(path, threadId, onDisconnect);
-  try { await connection.connect(); await connection.observe(onState); return () => connection.close(); }
+  try { await connection.connect(); await connection.observe(onState, onSnapshot); return () => connection.close(); }
   catch (error) { connection.close(); throw error; }
 }
 

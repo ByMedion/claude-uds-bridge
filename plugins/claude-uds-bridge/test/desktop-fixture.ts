@@ -7,6 +7,8 @@ import { z } from "zod";
 
 const requestSchema = z.object({ type: z.string(), requestId: z.string().optional(), method: z.string(), params: z.unknown(), version: z.number().optional() });
 
+type Patch = { op: string; path: (string | number)[]; value: unknown };
+
 export async function receiver(state: 'active' | 'idle', dropAcknowledgement = false, endBeforeSteer = false, root = mkdtempSync('/tmp/desktop-test-'), streamVersion = 11) {
   mkdirSync(join(root, 'ipc'), { mode: 0o700 });
   const path = join(root, 'ipc', 'ipc.sock');
@@ -21,7 +23,7 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
   let permissions: unknown = { approvalPolicy: 'on-request', sandboxPolicy: { type: 'workspaceWrite' } };
   let history: Record<string, unknown> = { turns: [], turnHistory: { kind: 'legacy' } };
   const clients = new Set<net.Socket>();
-  const announce = new Set<() => void>();
+  const announce = new Set<(patches?: Patch[]) => void>();
   const server = net.createServer(socket => {
     clients.add(socket);
     socket.on('close', () => clients.delete(socket));
@@ -34,11 +36,13 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
       body.copy(framed, 4);
       socket.write(framed);
     };
-    announce.add(() => write({ type: 'broadcast', sourceClientId: 'owner', method: 'thread-stream-state-changed', version: streamVersion,
-      params: { conversationId: threadId, change: { type: 'patches', patches: [
-        { op: 'replace', path: ['threadRuntimeStatus'], value: { type: state } },
-        { op: 'replace', path: ['currentPermissions'], value: permissions },
-      ] } } }));
+    const broadcast = (patches: Patch[] = [
+      { op: 'replace', path: ['threadRuntimeStatus'], value: { type: state } },
+      { op: 'replace', path: ['currentPermissions'], value: permissions },
+    ]) => write({ type: 'broadcast', sourceClientId: 'owner', method: 'thread-stream-state-changed', version: streamVersion,
+      params: { conversationId: threadId, change: { type: 'patches', patches } } });
+    announce.add(broadcast);
+    socket.on('close', () => announce.delete(broadcast));
     socket.on('data', chunk => {
       buffer = Buffer.concat([buffer, typeof chunk === 'string' ? Buffer.from(chunk) : chunk]);
       while (buffer.length >= 4 && buffer.length >= 4 + buffer.readUInt32LE()) {
@@ -119,7 +123,10 @@ export async function receiver(state: 'active' | 'idle', dropAcknowledgement = f
     },
     failQueue(value: 'finalize' | 'ack') { queueFailure = value; },
     disconnectClients() { for (const socket of clients) socket.destroy(); },
-    setHistory(value: Record<string, unknown>) { history = { turns: [], turnHistory: { kind: 'legacy' }, ...value }; },
+    setHistory(value: Record<string, unknown>, patchPath?: (string | number)[]) {
+      history = { turns: [], turnHistory: { kind: 'legacy' }, ...value };
+      if (patchPath) for (const send of announce) send([{ op: 'replace', path: patchPath, value: null }]);
+    },
     setPermissions(value: unknown) { permissions = value; for (const send of announce) send(); },
     setState(value: 'idle' | 'active') { state = value; for (const send of announce) send(); }, close: async () => {
     for (const socket of clients) socket.destroy();

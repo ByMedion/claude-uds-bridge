@@ -3,6 +3,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { tmpdir } from 'node:os';
 import { AppServer, AppServerDisconnected, ThreadUnavailable, withAppServer } from './app-server';
+import { observeDesktopTurnFailures, type TurnFailureHandler } from './turn-failure';
 import { privateDirectory, queueRemoved, DeliveryUnsupported, type DeliveryMode } from './claude';
 import { deliverToDesktop, DesktopDisconnected, readDesktopInputs, readDesktopRuntime, readDesktopContext, readDesktopCompactions, compactDesktop, watchDesktop, type Runtime } from './desktop';
 
@@ -46,23 +47,26 @@ export async function discoverDesktopTarget(paths: string[], threadId: string): 
   throw new Error(`No reachable Desktop IPC socket: ${unavailable.join(', ')}. Check socket ownership and the trusted SessionStart hook. If Desktop reused an incompatible IDE router, inspect listener ownership and IPC-TROUBLESHOOTING.md; do not automatically stop the IDE or unlink its live socket.`);
 }
 
-export async function watchCodex(target: Target, threadId: string, onState: (state: Runtime) => void, onDisconnect: () => void) {
+export async function watchCodex(target: Target, threadId: string, onState: (state: Runtime) => void, onDisconnect: () => void,
+  onTurnFailure?: TurnFailureHandler) {
   let server: AppServer | undefined;
   let closeDesktop: (() => void) | undefined;
   let stopped = false;
   let ready = false;
   let recovering = false;
+  const observeFailure: TurnFailureHandler | undefined = onTurnFailure && (failure => { if (!stopped) onTurnFailure(failure); });
+  const inspectDesktop = observeFailure && target.kind === 'desktop' ? observeDesktopTurnFailures(observeFailure) : undefined;
   const close = () => { stopped = true; server?.close(); closeDesktop?.(); };
   const attach = async () => {
     if (target.kind === 'desktop') {
       closeDesktop = await watchDesktop(target.path, threadId, state => { if (!stopped) onState(state); },
-        error => { if (ready) void recover(error); });
+        error => { if (ready) void recover(error); }, inspectDesktop);
       if (stopped) closeDesktop();
       return;
     }
     server = new AppServer(target.path, threadId, error => { if (ready) void recover(error); });
     await server.connect();
-    await server.observe(state => { if (!stopped) onState(state); });
+    await server.observe(state => { if (!stopped) onState(state); }, observeFailure);
     if (stopped) server.close();
   };
   const recover = async (error: unknown) => {
