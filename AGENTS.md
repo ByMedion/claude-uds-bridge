@@ -24,6 +24,7 @@
 - Compiled MCP/hook test entrypoints must be absolute. The check script sets both UDS_MCP_TEST_ENTRYPOINT and UDS_HOOK_TEST_ENTRYPOINT.
 - Desktop packet.version is per-method IPC, not the plugin or MCP version. Reject unknown stream versions; do not expand an allowlist without checking the actual protocol.
 - A loaded MCP and its detached receiver can have different versions. App restart or successful installation is not proof of receiver upgrade; inspect status and use diagnose/recover_receiver in the affected chat.
+- For several loaded local chats in one checkout, use `bun scripts/recover-receivers.ts --cwd ABSOLUTE_CHECKOUT THREAD_ID ...` after selecting their IDs with native Codex tools. A shared IPC preflight failure is enough to stop; do not repeat the batch until the transport changes.
 - A saved compact grant and native RPC admission are not completed compaction. Use the readiness/progress/final-result contract in COMPACTION.md.
 - Synthetic/local-model checks do not establish a real Claude round trip. Keep real busy chats out of test fixtures; use native Codex tools for Codex-to-Codex coordination.
 - Diagnostic exports use an explicit metadata allowlist. Never dump message bodies, config credentials or SELECT * from state tables containing secrets.
