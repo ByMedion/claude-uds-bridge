@@ -5,6 +5,9 @@ import { join, resolve } from 'node:path';
 export const repoRoot = resolve(import.meta.dir, '..');
 export const pluginRoot = join(repoRoot, 'plugins/claude-uds-bridge');
 export const packagePath = join(pluginRoot, 'package.json');
+const bundleEntrypoints = ['server', 'hook', 'recover-receivers'];
+export const bundleNames = bundleEntrypoints.map(name => name + '.js');
+export const bundleFiles = bundleNames.map(name => 'dist/' + name);
 export const manifestPath = join(pluginRoot, '.codex-plugin/plugin.json');
 export const readJson = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
 
@@ -34,7 +37,7 @@ export function filesUnder(root: string): string[] {
 export async function buildTemporary() {
   const directory = mkdtempSync(join(tmpdir(), 'uds-build-'));
   try {
-    const result = await Bun.build({ entrypoints: [join(pluginRoot, 'src/server.ts'), join(pluginRoot, 'src/hook.ts')],
+    const result = await Bun.build({ entrypoints: bundleEntrypoints.map(name => join(pluginRoot, 'src', name + '.ts')),
       target: 'bun', minify: true, outdir: directory });
     if (!result.success) throw new Error(result.logs.map(String).join('\n'));
     return { directory, cleanup: () => rmSync(directory, { recursive: true, force: true }) };

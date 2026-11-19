@@ -4,7 +4,7 @@ import { homedir, tmpdir } from 'node:os';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { fail, filesUnder, metadata, packagePath, pluginRoot, readJson, repoRoot } from './common';
+import { bundleFiles, fail, filesUnder, metadata, packagePath, pluginRoot, readJson, repoRoot } from './common';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -19,7 +19,7 @@ async function main() {
   const marketplace = readJson(join(repoRoot, '.agents/plugins/marketplace.json'));
   installed ??= join(codexHome, 'plugins/cache', marketplace.name, pkg.name, pkg.version);
   if (!existsSync(installed)) throw new Error('Installed package not found; pass --installed-root from codex plugin add --json');
-  const files = ['package.json', '.codex-plugin/plugin.json', '.mcp.json', 'hooks/hooks.json', 'dist/server.js', 'dist/hook.js',
+  const files = ['package.json', '.codex-plugin/plugin.json', '.mcp.json', 'hooks/hooks.json', ...bundleFiles,
     ...readdirSync(pluginRoot).filter(name => name.endsWith('.md')),
     ...filesUnder(join(pluginRoot, 'skills')).map(path => relative(pluginRoot, path))];
   for (const name of files) assert(readFileSync(join(installed, name)).equals(readFileSync(join(pluginRoot, name))), `Installed file differs: ${name}`);
@@ -32,6 +32,9 @@ async function main() {
     const env = { ...process.env };
     Object.assign(env, { CODEX_HOME: root, CLAUDE_CONFIG_DIR: join(root, 'claude'), TMPDIR: root });
     delete env.CODEX_THREAD_ID;
+    const batchHelp = Bun.spawnSync([process.execPath, join(installed, 'dist/recover-receivers.js'), '--help'], { cwd: root, env });
+    assert.equal(batchHelp.exitCode, 0, batchHelp.stderr.toString());
+    assert(batchHelp.stdout.toString().includes('--cwd ABSOLUTE_CHECKOUT'), 'Bundled batch recovery has no usage output');
     await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(installed, 'dist/server.js')], env }));
     assert.equal(client.getServerVersion()?.version, pkg.version, 'Loaded MCP version differs');
     const listed = await client.listTools();

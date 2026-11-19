@@ -21,6 +21,7 @@ export async function appServer(root = mkdtempSync('/tmp/codex-app-'), threadId 
   let loaded = true;
   let unloadAfterRead = false;
   let dropAcknowledgement = false;
+  let hooks: unknown;
   const notify = (method: string, params: unknown) => {
     for (const socket of sockets.clients) socket.send(JSON.stringify({ method, params }));
   };
@@ -33,6 +34,7 @@ export async function appServer(root = mkdtempSync('/tmp/codex-app-'), threadId 
       const reply = (result: unknown) => socket.send(JSON.stringify({ id: request.id, result }));
       const thread = { id: threadId, cwd: root, status: { type: loaded ? state : 'notLoaded' }, canAcceptDirectInput: true };
       if (request.method === 'initialize') reply({ userAgent: 'codex/0.159.2', codexHome: root });
+      else if (request.method === 'hooks/list' && hooks !== undefined) reply(hooks);
       else if (request.method === 'thread/loaded/list') reply({ data: loaded ? [threadId] : [], nextCursor: null });
       else if (request.method === 'thread/read') { reply({ thread }); if (unloadAfterRead) { loaded = false; unloadAfterRead = false; } }
       else if (request.method === 'thread/resume') {
@@ -64,6 +66,7 @@ export async function appServer(root = mkdtempSync('/tmp/codex-app-'), threadId 
     completeTurn(turn: unknown, targetThread = threadId) { notify('turn/completed', { threadId: targetThread, turn }); },
     completeItem(item: unknown, id = turnId) { notify('item/completed', { threadId, turnId: id, item }); },
     completeReview(review: unknown, targetThread = threadId) { notify('item/autoApprovalReview/completed', { threadId: targetThread, ...review as object }); },
+    setHooks(value: unknown) { hooks = value; },
     setItems(value: unknown[]) { items = value; },
     setQueue(value: unknown[]) { queue = value; notify('thread/queue/changed', { threadId }); },
     setLoaded(value: boolean) { loaded = value; },

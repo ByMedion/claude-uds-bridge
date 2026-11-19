@@ -15,7 +15,7 @@
 - Runtime change: `bun scripts/check.ts focused test/NAME.test.ts ...` runs type checks and explicitly selected existing tests.
 - Release: `bun scripts/check.ts release` runs the full suite once, compares fresh temporary bundles with `dist`, then tests the compiled MCP. Add `--native` for the real Codex app-server/local-model-stub harness.
 - Repeat broad checks only after changes or failures that justify them. For text-only changes, do not automatically run the runtime suite.
-- A changed source file must ship with matching `dist/server.js` and `dist/hook.js`; stale committed bundles install successfully but execute old code.
+- Runtime source changes must ship with matching bundles under `dist/`; stale bundles install successfully but execute old code.
 
 ## Mistakes to avoid
 

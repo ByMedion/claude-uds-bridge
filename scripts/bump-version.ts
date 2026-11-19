@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { buildTemporary, fail, manifestPath, metadata, packagePath, pluginRoot } from './common';
+import { buildTemporary, bundleFiles, bundleNames, fail, manifestPath, metadata, packagePath, pluginRoot } from './common';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -27,7 +27,7 @@ async function main() {
     if (JSON.parse(after.toString()).version !== version) throw new Error(`Could not update top-level version: ${path}`);
     return { path, before, after };
   });
-  console.log(JSON.stringify({ from: pkg.version, to: version, dryRun: args.includes('--dry-run'), files: ['package.json', '.codex-plugin/plugin.json', 'dist/server.js', 'dist/hook.js'] }));
+  console.log(JSON.stringify({ from: pkg.version, to: version, dryRun: args.includes('--dry-run'), files: ['package.json', '.codex-plugin/plugin.json', ...bundleFiles] }));
   if (args.includes('--dry-run')) return;
   const writes: { path: string; before?: Buffer; after: Buffer }[] = [];
   const write = (path: string, after: Buffer, before = existsSync(path) ? readFileSync(path) : undefined) => {
@@ -39,7 +39,7 @@ async function main() {
       write(update.path, update.after, update.before);
     }
     const build = await buildTemporary();
-    try { for (const name of ['server.js', 'hook.js']) write(join(pluginRoot, 'dist', name), readFileSync(join(build.directory, name))); }
+    try { for (const name of bundleNames) write(join(pluginRoot, 'dist', name), readFileSync(join(build.directory, name))); }
     finally { build.cleanup(); }
   } catch (error) {
     for (const entry of writes.reverse()) {

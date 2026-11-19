@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { buildTemporary, fail, filesUnder, metadata, pluginRoot, repoRoot, run } from './common';
+import { buildTemporary, bundleNames, fail, filesUnder, metadata, pluginRoot, repoRoot, run } from './common';
 
 const usage = 'Usage: bun scripts/check.ts docs | focused test/NAME.test.ts ... | release [--native]';
 
@@ -45,7 +45,7 @@ async function main() {
   await run([process.execPath, 'test']);
   const build = await buildTemporary();
   try {
-    for (const name of ['server.js', 'hook.js']) {
+    for (const name of bundleNames) {
       if (!readFileSync(join(build.directory, name)).equals(readFileSync(join(pluginRoot, 'dist', name)))) {
         throw new Error(`dist/${name} is stale: run bun run build in the plugin directory`);
       }
