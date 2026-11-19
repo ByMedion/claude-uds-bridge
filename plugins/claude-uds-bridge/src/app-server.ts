@@ -6,6 +6,7 @@ import { checkSocket, uuid } from './claude';
 import type { Runtime } from './desktop';
 import type { Inputs } from './desktop-input';
 import { appServerTurnFailure, type TurnFailureHandler } from './turn-failure';
+import type { AppServerReplyObserver } from './reply-blocked';
 import { version } from './version';
 
 const statusSchema = z.object({ type: z.string() });
@@ -32,6 +33,7 @@ export class AppServer {
   private disconnectError?: Error;
   private onState?: (state: Runtime) => void;
   private onTurnFailure?: TurnFailureHandler;
+  private inspectReply?: AppServerReplyObserver;
   private refreshing = false;
   private dirty = false;
 
@@ -61,6 +63,7 @@ export class AppServer {
       if (packet.id !== undefined) return;
       const thread = z.object({ threadId: z.string() }).safeParse(packet.params);
       if (!thread.success || thread.data.threadId !== this.threadId) return;
+      this.inspectReply?.(packet.method, packet.params);
       if (packet.method === 'thread/settings/updated') {
         const settings = z.object({ threadSettings: permissionsSchema }).parse(packet.params);
         this.mode = permissionMode(settings.threadSettings);
@@ -142,8 +145,9 @@ export class AppServer {
     return { cwd: thread.cwd, owner: this.threadId, runtime: await this.runtime(), hasExecutionEnvironments: false };
   }
 
-  async observe(onState: (state: Runtime) => void, onTurnFailure?: TurnFailureHandler) {
+  async observe(onState: (state: Runtime) => void, onTurnFailure?: TurnFailureHandler, inspectReply?: AppServerReplyObserver) {
     this.onTurnFailure = onTurnFailure;
+    this.inspectReply = inspectReply;
     const snapshot = z.object({ thread: threadSchema, approvalPolicy: permissionsSchema.shape.approvalPolicy,
       sandbox: permissionsSchema.shape.sandboxPolicy }).parse(
       await this.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));

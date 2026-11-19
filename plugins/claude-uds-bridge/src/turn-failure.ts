@@ -41,14 +41,16 @@ const desktopHistory = z.object({
   history: z.object({ entitiesByKey: z.record(z.string(), z.unknown()) }),
 });
 
+export function desktopTurnEntries(state: { turns?: unknown; turnHistory?: unknown }) {
+  const history = desktopHistory.safeParse(state.turnHistory).data;
+  return [...(Array.isArray(state.turns) ? state.turns : []), ...Object.values(history?.history.entitiesByKey ?? {})];
+}
+
 export function observeDesktopTurnFailures(report: TurnFailureHandler, since = Date.now()) {
   const active = new Set<string>();
   const reported = new Set<string>();
-  return (state: { turns?: unknown; turnHistory?: unknown }) => {
-    const history = desktopHistory.safeParse(state.turnHistory).data;
-    const turns = [...(Array.isArray(state.turns) ? state.turns : []),
-      ...Object.values(history?.history.entitiesByKey ?? {})];
-    for (const value of turns) {
+  return (state: Parameters<typeof desktopTurnEntries>[0]) => {
+    for (const value of desktopTurnEntries(state)) {
       const turn = desktopTurn.safeParse(value).data;
       if (!turn) continue;
       if (turn.status === 'inProgress') { active.add(turn.turnId); continue; }

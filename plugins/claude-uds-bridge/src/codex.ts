@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { tmpdir } from 'node:os';
 import { AppServer, AppServerDisconnected, ThreadUnavailable, withAppServer } from './app-server';
 import { observeDesktopTurnFailures, type TurnFailureHandler } from './turn-failure';
+import { observeAppServerReplyBlocks, observeDesktopReplyBlocks, type ReplyBlockedHandler } from './reply-blocked';
 import { privateDirectory, queueRemoved, DeliveryUnsupported, type DeliveryMode } from './claude';
 import { deliverToDesktop, DesktopDisconnected, readDesktopInputs, readDesktopRuntime, readDesktopContext, readDesktopCompactions, compactDesktop, watchDesktop, type Runtime } from './desktop';
 
@@ -48,14 +49,21 @@ export async function discoverDesktopTarget(paths: string[], threadId: string): 
 }
 
 export async function watchCodex(target: Target, threadId: string, onState: (state: Runtime) => void, onDisconnect: () => void,
-  onTurnFailure?: TurnFailureHandler) {
+  onTurnFailure?: TurnFailureHandler, onReplyBlocked?: ReplyBlockedHandler) {
   let server: AppServer | undefined;
   let closeDesktop: (() => void) | undefined;
   let stopped = false;
   let ready = false;
   let recovering = false;
   const observeFailure: TurnFailureHandler | undefined = onTurnFailure && (failure => { if (!stopped) onTurnFailure(failure); });
-  const inspectDesktop = observeFailure && target.kind === 'desktop' ? observeDesktopTurnFailures(observeFailure) : undefined;
+  const observeReply: ReplyBlockedHandler | undefined = onReplyBlocked && (event => { if (!stopped) onReplyBlocked(event); });
+  const inspectFailure = target.kind === 'desktop' && observeFailure && observeDesktopTurnFailures(observeFailure);
+  const inspectReply = target.kind === 'desktop' && observeReply && observeDesktopReplyBlocks(observeReply);
+  const inspectDesktop = inspectFailure || inspectReply ? (state: { turns?: unknown; turnHistory?: unknown }) => {
+    if (inspectFailure) inspectFailure(state);
+    if (inspectReply) inspectReply(state);
+  } : undefined;
+  const inspectAppServer = observeReply && target.kind === 'app-server' ? observeAppServerReplyBlocks(observeReply) : undefined;
   const close = () => { stopped = true; server?.close(); closeDesktop?.(); };
   const attach = async () => {
     if (target.kind === 'desktop') {
@@ -66,7 +74,7 @@ export async function watchCodex(target: Target, threadId: string, onState: (sta
     }
     server = new AppServer(target.path, threadId, error => { if (ready) void recover(error); });
     await server.connect();
-    await server.observe(state => { if (!stopped) onState(state); }, observeFailure);
+    await server.observe(state => { if (!stopped) onState(state); }, observeFailure, inspectAppServer);
     if (stopped) server.close();
   };
   const recover = async (error: unknown) => {

@@ -15,11 +15,14 @@ import { CompactAccess, type CompactAccessMode } from './compact-access';
 import { compactMarker } from './compact';
 import { formatPeerInput } from './peer-input';
 import type { TurnFailure } from './turn-failure';
+import type { ReplyBlocked } from './reply-blocked';
 
 type Message = { id: string; peer_id: string; direction: string; text: string; status: string; turn_id: string | null;
   peer_address: string | null; peer_start: string | null; from_mode: string | null; expires_at: number | null; kind: string;
   local_chain: string | null; local_verified: number; parent_input_id: string | null;
   drop_reason: string | null; status_reason: string | null; delivery_mode: DeliveryMode };
+type NoticeParent = Pick<Message, 'id' | 'peer_id' | 'peer_address' | 'peer_start' | 'direction' | 'local_chain' | 'text'>
+  & { hop_chain: string | null };
 type Subscription = { id: string; peer_id: string; peer_address: string; peer_start: string | null; direction: string };
 export const policySchema = z.enum(['default', 'accept', 'hold', 'refuse']);
 export const expirySchema = z.enum(['60s', '5m', '10m', 'never']);
@@ -130,7 +133,8 @@ export class Bridge {
       request_id TEXT NOT NULL, phase TEXT NOT NULL, notice_id TEXT NOT NULL,
       PRIMARY KEY(request_id,phase)
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS turn_failure_once ON messages(turn_id) WHERE kind='turn-failed'`);
+    CREATE UNIQUE INDEX IF NOT EXISTS turn_failure_once ON messages(turn_id) WHERE kind='turn-failed';
+    CREATE UNIQUE INDEX IF NOT EXISTS reply_blocked_once ON messages(turn_id,parent_message_id) WHERE kind='reply-blocked'`);
   }
 
   private exclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -366,64 +370,98 @@ export class Bridge {
 
   reportTurnFailure(failure: TurnFailure) {
     return this.exclusive(async () => {
-      const lifecycle = this.lifecycle();
-      if (this.closing || !this.ownsReceiver || !this.registration || !lifecycle?.active) return;
+      if (this.closing || !this.ownsReceiver || !this.registration || !this.lifecycle()?.active) return;
       if (this.db.query("SELECT 1 FROM messages WHERE kind='turn-failed' AND turn_id=?").get(failure.id)) return;
-      const parent = this.db.query<Pick<Message, 'id' | 'peer_id' | 'peer_address' | 'peer_start' | 'direction' | 'local_chain' | 'text'>
-        & { hop_chain: string | null }, [string]>(`
+      const parent = this.db.query<NoticeParent, [string]>(`
         SELECT id,peer_id,peer_address,peer_start,direction,hop_chain,local_chain,text FROM messages
         WHERE turn_id=? AND kind='message' AND peer_start IS NOT NULL
           AND ((direction='in' AND local_verified=1 AND status IN ('started','steered','accepted','queued'))
             OR (direction='out' AND status IN ('socket-written','delivered','held')))
         ORDER BY rowid DESC LIMIT 1
       `).get(failure.id);
-      if (!parent?.peer_address) return;
-      const receiver = this.receiver();
-      const text = `${receiver.name} · ${new Date(failure.finishedAt).toISOString()} · turn ${failure.id} ended with status failed (${failure.errorCode}).`;
-      const noticeId = randomUUID();
-      this.db.run(`INSERT INTO messages(id,peer_id,direction,text,status,turn_id,peer_address,peer_start,kind,parent_message_id)
-        VALUES (?,?,'out',?,'not-sent',?,?,?,'turn-failed',?)`,
-        [noticeId, parent.peer_id, text, failure.id, parent.peer_address, parent.peer_start, parent.id]);
-
-      let peer: Peer;
-      try { peer = findPeerProcess(this.configDir, parent.peer_address, parent.peer_start); }
-      catch {
-        this.db.run("UPDATE messages SET status_reason='peer_unavailable' WHERE id=?", [noticeId]);
-        return;
-      }
-      if (peer.sessionId !== parent.peer_id || peer.entrypoint === 'codex-claude-uds-bridge') {
-        this.db.run("UPDATE messages SET status_reason='peer_identity_changed_or_not_claude' WHERE id=?", [noticeId]);
-        return;
-      }
-      const inbound = parent.direction === 'in';
-      const chain = inbound ? hopChain(parent.text) : parent.hop_chain?.split(',').filter(Boolean) ?? [];
-      const frame = userFrame(peer, peerAddress(receiver.messagingSocketPath), receiver.name, this.threadId, noticeId,
-        text, this.runtime().mode, inbound ? this.ownHop() : null, chain, 'steer',
-        inbound && parent.local_chain ? { fullChain: parent.local_chain.split(','), secret: this.budget.secret(), replaceLast: true } : undefined);
-      const reserved = this.db.transaction(() => {
-        if (!this.budget.reserve(noticeId)) {
-          this.db.run("UPDATE messages SET status_reason='automatic_budget_exhausted' WHERE id=?", [noticeId]);
-          return false;
-        }
-        this.db.run("UPDATE messages SET status='submitting' WHERE id=?", [noticeId]);
-        return true;
-      }).immediate();
-      if (!reserved) return;
-      try {
-        if (!await sendFrames(this.configDir, peer, [frame], { canWrite: () => {
-          const current = this.lifecycle();
-          return !this.closing && current?.active === 1 && current.generation === lifecycle.generation;
-        } })) {
-          throw new SendRefused('Receiver stopped before notification write');
-        }
-        this.db.run("UPDATE messages SET status='socket-written' WHERE id=? AND status='submitting'", [noticeId]);
-      } catch (error) {
-        const refused = error instanceof SendRefused;
-        if (refused) this.budget.refund(noticeId);
-        this.db.run("UPDATE messages SET status=?,status_reason=? WHERE id=? AND status='submitting'",
-          [refused ? 'not-sent' : 'unknown', refused ? 'notification_refused' : 'notification_write_uncertain', noticeId]);
-      }
+      if (!parent) return;
+      await this.sendTurnNotice('turn-failed', failure.id, parent,
+        ` · ${new Date(failure.finishedAt).toISOString()} · turn ${failure.id} ended with status failed (${failure.errorCode}).`);
     }).catch(() => console.error('Turn failure notification handling failed; inspect bridge status.'));
+  }
+
+  reportReplyBlocked({ turnId, recipientId, deniedAtMs }: ReplyBlocked) {
+    return this.exclusive(async () => {
+      if (this.closing || !this.ownsReceiver || !this.registration || !this.lifecycle()?.active) return;
+      // Ensure the source input was observed in Codex before telling its sender it was received.
+      try { await this.syncInputs(); }
+      catch { /* An existing consumption record is sufficient. */ }
+      const candidates = this.db.query<NoticeParent, [string, string]>(`
+        SELECT id,peer_id,peer_address,peer_start,direction,hop_chain,local_chain,text FROM messages
+        WHERE turn_id=? AND peer_id=? AND direction='in' AND kind='message' AND local_verified=1
+          AND peer_start IS NOT NULL AND native_input_id IS NOT NULL
+          AND status IN ('started','steered','accepted','queued')
+        LIMIT 2
+      `).all(turnId, recipientId);
+      const parent = candidates.length === 1 ? candidates[0] : undefined;
+      if (!parent || this.db.query("SELECT 1 FROM messages WHERE kind='reply-blocked' AND turn_id=? AND parent_message_id=?")
+        .get(turnId, parent.id)) return;
+      // Treat same-second writes conservatively because the ledger uses seconds.
+      const laterSend = this.db.query(`
+        SELECT 1 FROM messages WHERE turn_id=? AND peer_id=? AND direction='out' AND kind='message'
+          AND created_at>=? AND status IN ('submitting','unknown','socket-written','held','delivered')
+      `).get(turnId, recipientId, Math.floor(deniedAtMs / 1000));
+      if (laterSend) return;
+      await this.sendTurnNotice('reply-blocked', turnId, parent,
+        ` accepted message ${parent.id}. Codex approval review denied sending the reply for this turn.`, 'approval_denied');
+    }).catch(() => console.error('Reply-blocked notification handling failed; inspect bridge status.'));
+  }
+
+  private async sendTurnNotice(kind: 'turn-failed' | 'reply-blocked', turnId: string, parent: NoticeParent, detail: string,
+    reason: string | null = null) {
+    const lifecycle = this.lifecycle();
+    if (this.closing || !this.ownsReceiver || !this.registration || !lifecycle?.active || !parent.peer_address) return;
+    const receiver = this.receiver();
+    const text = receiver.name + detail;
+    const noticeId = randomUUID();
+    const claim = this.db.run(`INSERT OR IGNORE INTO messages(id,peer_id,direction,text,status,turn_id,peer_address,peer_start,kind,parent_message_id,status_reason)
+      VALUES (?,?,'out',?,'not-sent',?,?,?,?,?,?)`,
+      [noticeId, parent.peer_id, text, turnId, parent.peer_address, parent.peer_start, kind, parent.id, reason]);
+    if (!claim.changes) return;
+
+    let peer: Peer;
+    try { peer = findPeerProcess(this.configDir, parent.peer_address, parent.peer_start); }
+    catch {
+      this.db.run("UPDATE messages SET status_reason='peer_unavailable' WHERE id=?", [noticeId]);
+      return;
+    }
+    if (peer.sessionId !== parent.peer_id || peer.entrypoint === 'codex-claude-uds-bridge') {
+      this.db.run("UPDATE messages SET status_reason='peer_identity_changed_or_not_claude' WHERE id=?", [noticeId]);
+      return;
+    }
+    const inbound = parent.direction === 'in';
+    const chain = inbound ? hopChain(parent.text) : parent.hop_chain?.split(',').filter(Boolean) ?? [];
+    const frame = userFrame(peer, peerAddress(receiver.messagingSocketPath), receiver.name, this.threadId, noticeId,
+      text, this.runtime().mode, inbound ? this.ownHop() : null, chain, 'steer',
+      inbound && parent.local_chain ? { fullChain: parent.local_chain.split(','), secret: this.budget.secret(), replaceLast: true } : undefined);
+    const reserved = this.db.transaction(() => {
+      if (!this.budget.reserve(noticeId)) {
+        this.db.run("UPDATE messages SET status_reason='automatic_budget_exhausted' WHERE id=?", [noticeId]);
+        return false;
+      }
+      this.db.run("UPDATE messages SET status='submitting' WHERE id=?", [noticeId]);
+      return true;
+    }).immediate();
+    if (!reserved) return;
+    try {
+      if (!await sendFrames(this.configDir, peer, [frame], { canWrite: () => {
+        const current = this.lifecycle();
+        return !this.closing && current?.active === 1 && current.generation === lifecycle.generation;
+      } })) {
+        throw new SendRefused('Receiver stopped before notification write');
+      }
+      this.db.run("UPDATE messages SET status='socket-written' WHERE id=? AND status='submitting'", [noticeId]);
+    } catch (error) {
+      const refused = error instanceof SendRefused;
+      if (refused) this.budget.refund(noticeId);
+      this.db.run("UPDATE messages SET status=?,status_reason=? WHERE id=? AND status='submitting'",
+        [refused ? 'not-sent' : 'unknown', refused ? 'notification_refused' : 'notification_write_uncertain', noticeId]);
+    }
   }
 
   private receiver() {
@@ -1029,8 +1067,8 @@ export class Bridge {
       inboundPolicy: this.policy(), dialogExpiry: this.dialogExpiry(), heldCount: this.held().length, unreadCount: this.unreadCount(),
       idleRequests: this.db.query<Pick<Subscription, 'id' | 'peer_id' | 'direction'> & { status: string }, [number]>(
         'SELECT id,peer_id,direction,status FROM idle_requests WHERE expires_at>?').all(Date.now()),
-      messages: this.db.query<Pick<Message, 'id' | 'peer_id' | 'direction' | 'status' | 'turn_id' | 'kind' | 'drop_reason' | 'status_reason' | 'delivery_mode'> & { input_id: string | null }, []>(
-        'SELECT id,peer_id,direction,status,turn_id,kind,drop_reason,status_reason,delivery_mode,desktop_input_id AS input_id FROM messages ORDER BY created_at DESC,rowid DESC LIMIT 20').all() };
+      messages: this.db.query<Pick<Message, 'id' | 'peer_id' | 'direction' | 'status' | 'turn_id' | 'kind' | 'drop_reason' | 'status_reason' | 'delivery_mode'> & { input_id: string | null; parent_message_id: string | null }, []>(
+        'SELECT id,peer_id,direction,status,turn_id,kind,drop_reason,status_reason,delivery_mode,parent_message_id,desktop_input_id AS input_id FROM messages ORDER BY created_at DESC,rowid DESC LIMIT 20').all() };
   }
 
   async close() {
